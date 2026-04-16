@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>復康巴士資源樞紐系統 - Rehabus Hub</title>
+    <title>復康巴士資源樞紐系統 - Rehabus Hub (Cloud Storage)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- React & ReactDOM -->
@@ -15,35 +15,42 @@
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
-        body {
-            font-family: 'Noto Sans TC', sans-serif;
-        }
-        /* 自定義捲軸樣式 */
-        ::-webkit-scrollbar {
-            width: 6px;
-        }
-        ::-webkit-scrollbar-track {
-            background: #f1f5f9;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #cbd5e1;
-            border-radius: 10px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #94a3b8;
-        }
+        body { font-family: 'Noto Sans TC', sans-serif; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
     </style>
 </head>
 <body class="bg-slate-50">
     <div id="root"></div>
 
+    <!-- Firebase SDK Setup -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, addDoc, updateDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by environment
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'rehabus-hub-default';
+
+        // Export services for the React part
+        window.FB_SERVICES = { 
+            db, auth, appId, collection, doc, setDoc, onSnapshot, addDoc, updateDoc, 
+            signInAnonymously, onAuthStateChanged, signInWithCustomToken 
+        };
+    </script>
+
+    <!-- React Application Logic -->
     <script type="text/babel">
-        const { useState, useEffect, useMemo, useRef } = React;
+        const { useState, useEffect, useRef } = React;
         
-        // 修正後的圖標組件包裝
+        // Icon Component using Lucide
         const Icon = ({ name, className = "w-5 h-5" }) => {
             const iconRef = useRef(null);
-
             useEffect(() => {
                 if (window.lucide && iconRef.current) {
                     iconRef.current.innerHTML = '';
@@ -51,18 +58,15 @@
                     iconElement.setAttribute('data-lucide', name);
                     if (className) iconElement.className = className;
                     iconRef.current.appendChild(iconElement);
-                    window.lucide.createIcons({
-                        attrs: { class: className }
-                    });
+                    window.lucide.createIcons({ attrs: { class: className } });
                 }
             }, [name, className]);
-
             return <span ref={iconRef} className="inline-flex items-center justify-center"></span>;
         };
 
         const REGIONS = ['香港島', '九龍東', '九龍西', '新界東', '新界西'];
         const TIME_SLOTS = ['上午繁忙時間 (06:00-10:59)', '中段 (11:00-14:59)', '下午繁忙時間 (15:00-19:59)', '晚上 (20:00-23:59)'];
-        const PURPOSES = ['就診/治療', '上班/上學', '康復訓練', '社交/娛樂', '其他'];
+        const PURPOSES = ['就診/治療', '上班/上學', '康復訓練', '社交/娛樂', '日常購物', '其他'];
 
         const generateDefaultQuota = () => {
             const quota = {};
@@ -70,8 +74,8 @@
                 quota[region] = {};
                 TIME_SLOTS.forEach(slot => {
                     quota[region][slot] = {
-                        pickup: { total: 12, used: Math.floor(Math.random() * 5) },
-                        dropoff: { total: 12, used: Math.floor(Math.random() * 5) }
+                        pickup: { total: 12, used: 0 },
+                        dropoff: { total: 12, used: 0 }
                     };
                 });
             });
@@ -79,11 +83,13 @@
         };
 
         function App() {
+            const [user, setUser] = useState(null);
             const [activeTab, setActiveTab] = useState('process');
             const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
             const [quotasData, setQuotasData] = useState({});
             const [bookings, setBookings] = useState([]);
             const [alertMsg, setAlertMsg] = useState({ type: '', text: '' });
+            const [loading, setLoading] = useState(true);
 
             const [bookingForm, setBookingForm] = useState({
                 applicantName: '',
@@ -93,85 +99,149 @@
                 timeSlot: TIME_SLOTS[0],
             });
 
+            // 1. Authentication Logic (Rule 3)
             useEffect(() => {
-                if (!quotasData[selectedDate]) {
-                    setQuotasData(prev => ({
-                        ...prev,
-                        [selectedDate]: generateDefaultQuota()
-                    }));
-                }
-                setAlertMsg({ type: '', text: '' });
-            }, [selectedDate]);
+                const { auth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } = window.FB_SERVICES;
+                
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (err) {
+                        console.error("Authentication failed", err);
+                    }
+                };
+
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, (user) => {
+                    setUser(user);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            // 2. Real-time Data Sync Logic (Rules 1 & 2)
+            useEffect(() => {
+                if (!user) return;
+                const { db, appId, collection, doc, onSnapshot, setDoc } = window.FB_SERVICES;
+
+                // Sync Bookings List (Public Collection)
+                const bookingsCol = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
+                const unsubBookings = onSnapshot(bookingsCol, (snapshot) => {
+                    const list = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
+                    // Sort in memory (Rule 2: No complex queries)
+                    setBookings(list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+                }, (err) => {
+                    console.error("Bookings sync failed", err);
+                });
+
+                // Sync Quotas for selected date
+                const quotaDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'quotas', selectedDate);
+                const unsubQuotas = onSnapshot(quotaDocRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        setQuotasData(prev => ({ ...prev, [selectedDate]: docSnap.data() }));
+                    } else {
+                        // Initialize date if missing
+                        const defaultData = generateDefaultQuota();
+                        setDoc(quotaDocRef, defaultData).catch(e => console.error(e));
+                        setQuotasData(prev => ({ ...prev, [selectedDate]: defaultData }));
+                    }
+                    setLoading(false);
+                }, (err) => {
+                    console.error("Quota sync failed", err);
+                });
+
+                return () => {
+                    unsubBookings();
+                    unsubQuotas();
+                };
+            }, [user, selectedDate]);
 
             const currentQuota = quotasData[selectedDate] || generateDefaultQuota();
 
-            const processBooking = () => {
+            const processBooking = async () => {
+                if (!user) return;
                 if (!bookingForm.applicantName.trim()) {
                     setAlertMsg({ type: 'error', text: '請輸入申請者姓名' });
                     return;
                 }
 
+                const { db, appId, doc, setDoc, collection, addDoc } = window.FB_SERVICES;
                 const pickupQuota = currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup;
                 const dropoffQuota = currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff;
 
                 if (pickupQuota.used >= pickupQuota.total || dropoffQuota.used >= dropoffQuota.total) {
-                    setAlertMsg({ type: 'error', text: '審核不通過：所選時段起訖點配額不足' });
+                    setAlertMsg({ type: 'error', text: '預約失敗：該時段起訖點配額不足' });
                     return;
                 }
 
-                setQuotasData(prev => ({
-                    ...prev,
-                    [selectedDate]: {
-                        ...prev[selectedDate],
-                        [bookingForm.pickupRegion]: {
-                            ...prev[selectedDate][bookingForm.pickupRegion],
-                            [bookingForm.timeSlot]: {
-                                ...prev[selectedDate][bookingForm.pickupRegion][bookingForm.timeSlot],
-                                pickup: { ...pickupQuota, used: pickupQuota.used + 1 }
-                            }
-                        },
-                        [bookingForm.dropoffRegion]: {
-                            ...prev[selectedDate][bookingForm.dropoffRegion],
-                            [bookingForm.timeSlot]: {
-                                ...prev[selectedDate][bookingForm.dropoffRegion][bookingForm.timeSlot],
-                                dropoff: { ...dropoffQuota, used: dropoffQuota.used + 1 }
-                            }
-                        }
-                    }
-                }));
+                try {
+                    // Update Quota Document
+                    const quotaDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'quotas', selectedDate);
+                    const updatedQuota = { ...currentQuota };
+                    updatedQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used += 1;
+                    updatedQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used += 1;
+                    await setDoc(quotaDocRef, updatedQuota);
 
-                setBookings(prev => [{ ...bookingForm, id: Date.now(), bookingDate: selectedDate }, ...prev]);
-                setAlertMsg({ type: 'success', text: '預約成功！' });
-                setBookingForm(prev => ({ ...prev, applicantName: '', purpose: PURPOSES[0] }));
+                    // Record New Booking
+                    const bookingsCol = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
+                    await addDoc(bookingsCol, {
+                        ...bookingForm,
+                        bookingDate: selectedDate,
+                        createdAt: Date.now(),
+                        userId: user.uid
+                    });
+
+                    setAlertMsg({ type: 'success', text: '預約成功！資料已同步至雲端' });
+                    setBookingForm(prev => ({ ...prev, applicantName: '', purpose: PURPOSES[0] }));
+                    
+                    // Clear message after 3 seconds
+                    setTimeout(() => setAlertMsg({ type: '', text: '' }), 3000);
+                } catch (err) {
+                    setAlertMsg({ type: 'error', text: '伺服器錯誤，請稍後再試' });
+                }
             };
 
-            const handleQuotaChange = (region, slot, hub, field, value) => {
+            const handleQuotaChange = async (region, slot, hub, field, value) => {
+                if (!user) return;
+                const { db, appId, doc, setDoc } = window.FB_SERVICES;
                 const val = parseInt(value) || 0;
-                setQuotasData(prev => ({
-                    ...prev,
-                    [selectedDate]: {
-                        ...prev[selectedDate],
-                        [region]: {
-                            ...prev[selectedDate][region],
-                            [slot]: {
-                                ...prev[selectedDate][region][slot],
-                                [hub]: { ...prev[selectedDate][region][slot][hub], [field]: val }
-                            }
-                        }
-                    }
-                }));
+                
+                const updatedQuota = { ...currentQuota };
+                updatedQuota[region][slot][hub][field] = val;
+                
+                setQuotasData(prev => ({ ...prev, [selectedDate]: updatedQuota }));
+                
+                const quotaDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'quotas', selectedDate);
+                await setDoc(quotaDocRef, updatedQuota);
             };
+
+            if (loading && !user) {
+                return (
+                    <div className="flex h-screen items-center justify-center bg-slate-50">
+                        <div className="text-center">
+                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                            <p className="font-bold text-slate-500">正在連接雲端樞紐...</p>
+                        </div>
+                    </div>
+                );
+            }
 
             return (
                 <div className="min-h-screen">
                     <header className="bg-slate-900 text-white p-4 shadow-xl flex justify-between items-center border-b-4 border-blue-600">
                         <div className="flex items-center space-x-3">
                             <Icon name="bus" className="w-8 h-8 text-blue-400" />
-                            <h1 className="text-xl font-black uppercase tracking-tight">Rehabus Hub | 車務調配系統</h1>
+                            <h1 className="text-xl font-black uppercase tracking-tight">Rehabus Hub | 雲端管理系統</h1>
+                        </div>
+                        <div className="hidden md:block text-[10px] text-slate-400 font-mono bg-slate-800 px-3 py-1 rounded-full">
+                            USER: {user?.uid}
                         </div>
                     </header>
 
-                    <div className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
+                    <div className="max-w-7xl mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
                         <aside className="space-y-4">
                             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                                 <button onClick={()=>setActiveTab('process')} className={`w-full flex items-center p-4 transition ${activeTab==='process'?'bg-blue-600 text-white':'text-slate-600 hover:bg-slate-50'}`}>
@@ -184,16 +254,27 @@
 
                             <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
                                 <h3 className="text-xs font-black text-slate-400 uppercase mb-3 flex items-center tracking-widest">
-                                    <Icon name="list" className="w-4 h-4 mr-2" /> {selectedDate} 預約名單
+                                    <Icon name="history" className="w-4 h-4 mr-2" /> 最近預約記錄 ({selectedDate})
                                 </h3>
-                                <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                                <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
                                     {bookings.filter(b => b.bookingDate === selectedDate).length === 0 ? (
-                                        <p className="text-[10px] text-center text-slate-400 py-4 italic">尚無預約</p>
+                                        <div className="text-center py-10">
+                                            <Icon name="calendar-x" className="w-10 h-10 text-slate-200 mx-auto mb-2" />
+                                            <p className="text-[10px] text-slate-400 italic">尚無預約資料</p>
+                                        </div>
                                     ) : (
                                         bookings.filter(b => b.bookingDate === selectedDate).map(b => (
-                                            <div key={b.id} className="text-[11px] p-3 bg-slate-50 rounded-xl border border-slate-100">
-                                                <div className="font-bold text-slate-800">{b.applicantName} <span className="text-blue-600">[{b.purpose}]</span></div>
-                                                <div className="text-slate-500 mt-1">{b.pickupRegion} → {b.dropoffRegion}</div>
+                                            <div key={b.id} className="text-[11px] p-3 bg-slate-50 rounded-xl border border-slate-100 hover:border-blue-200 transition-colors">
+                                                <div className="flex justify-between items-start">
+                                                    <span className="font-bold text-slate-800">{b.applicantName}</span>
+                                                    <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-bold scale-90">{b.purpose}</span>
+                                                </div>
+                                                <div className="text-slate-500 mt-2 flex items-center">
+                                                    <Icon name="map-pin" className="w-3 h-3 mr-1" /> {b.pickupRegion} → {b.dropoffRegion}
+                                                </div>
+                                                <div className="text-[9px] text-slate-400 mt-1 flex items-center">
+                                                    <Icon name="clock" className="w-3 h-3 mr-1" /> {b.timeSlot.split(' ')[0]}
+                                                </div>
                                             </div>
                                         ))
                                     )}
@@ -204,104 +285,159 @@
                         <main className="lg:col-span-3">
                             {activeTab === 'process' ? (
                                 <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
-                                    <div className="xl:col-span-3 bg-white p-8 rounded-3xl shadow-sm border border-slate-200 space-y-6">
-                                        <h2 className="text-lg font-black text-slate-800 flex items-center uppercase tracking-tight">
-                                            <Icon name="file-text" className="w-5 h-5 mr-2 text-blue-600" /> 預約資料錄入
-                                        </h2>
+                                    <div className="xl:col-span-3 bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-slate-200 space-y-6">
+                                        <div className="flex justify-between items-center border-b pb-4">
+                                            <h2 className="text-lg font-black text-slate-800 flex items-center uppercase tracking-tight">
+                                                <Icon name="clipboard-list" className="w-5 h-5 mr-2 text-blue-600" /> 填寫乘車申請
+                                            </h2>
+                                            <div className="flex items-center space-x-2">
+                                                <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                                                <span className="text-[10px] font-bold text-slate-400">雲端連線中</span>
+                                            </div>
+                                        </div>
+
                                         <div className="grid grid-cols-2 gap-4">
                                             <div className="col-span-2 md:col-span-1">
                                                 <label className="text-[11px] font-black text-slate-500 uppercase mb-2 block tracking-wider">乘車日期</label>
-                                                <input type="date" value={selectedDate} onChange={(e)=>setSelectedDate(e.target.value)} className="w-full p-3 border rounded-xl bg-slate-50 font-bold" />
+                                                <input type="date" value={selectedDate} onChange={(e)=>setSelectedDate(e.target.value)} className="w-full p-3 border rounded-xl bg-slate-50 font-bold focus:ring-2 focus:ring-blue-500 outline-none" />
                                             </div>
                                             <div className="col-span-2 md:col-span-1">
                                                 <label className="text-[11px] font-black text-slate-500 uppercase mb-2 block tracking-wider">申請人姓名</label>
-                                                <input type="text" value={bookingForm.applicantName} onChange={(e)=>setBookingForm({...bookingForm, applicantName: e.target.value})} className="w-full p-3 border rounded-xl bg-slate-50" placeholder="姓名" />
+                                                <input type="text" value={bookingForm.applicantName} onChange={(e)=>setBookingForm({...bookingForm, applicantName: e.target.value})} className="w-full p-3 border rounded-xl bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="姓名" />
                                             </div>
                                             <div className="col-span-2 md:col-span-1">
                                                 <label className="text-[11px] font-black text-blue-600 uppercase mb-2 block tracking-wider">用車目的</label>
-                                                <select value={bookingForm.purpose} onChange={(e)=>setBookingForm({...bookingForm, purpose: e.target.value})} className="w-full p-3 border border-blue-200 bg-blue-50 rounded-xl font-bold">
+                                                <select value={bookingForm.purpose} onChange={(e)=>setBookingForm({...bookingForm, purpose: e.target.value})} className="w-full p-3 border border-blue-200 bg-blue-50 rounded-xl font-bold appearance-none">
                                                     {PURPOSES.map(p => <option key={p}>{p}</option>)}
                                                 </select>
                                             </div>
                                             <div className="col-span-2 md:col-span-1">
-                                                <label className="text-[11px] font-black text-slate-500 uppercase mb-2 block tracking-wider">時段選擇</label>
-                                                <select value={bookingForm.timeSlot} onChange={(e)=>setBookingForm({...bookingForm, timeSlot: e.target.value})} className="w-full p-3 border rounded-xl bg-slate-50 font-bold">
+                                                <label className="text-[11px] font-black text-slate-500 uppercase mb-2 block tracking-wider">預約時段</label>
+                                                <select value={bookingForm.timeSlot} onChange={(e)=>setBookingForm({...bookingForm, timeSlot: e.target.value})} className="w-full p-3 border rounded-xl bg-slate-50 font-bold appearance-none">
                                                     {TIME_SLOTS.map(s => <option key={s}>{s}</option>)}
                                                 </select>
                                             </div>
                                             <div className="col-span-2 md:col-span-1">
-                                                <label className="text-[11px] font-black text-emerald-600 uppercase mb-2 block tracking-wider">上車區</label>
-                                                <select value={bookingForm.pickupRegion} onChange={(e)=>setBookingForm({...bookingForm, pickupRegion: e.target.value})} className="w-full p-3 border border-emerald-200 bg-emerald-50 rounded-xl font-bold">
+                                                <label className="text-[11px] font-black text-emerald-600 uppercase mb-2 block tracking-wider">上車區域 (Hub A)</label>
+                                                <select value={bookingForm.pickupRegion} onChange={(e)=>setBookingForm({...bookingForm, pickupRegion: e.target.value})} className="w-full p-3 border border-emerald-200 bg-emerald-50 rounded-xl font-bold appearance-none">
                                                     {REGIONS.map(r => <option key={r}>{r}</option>)}
                                                 </select>
                                             </div>
                                             <div className="col-span-2 md:col-span-1">
-                                                <label className="text-[11px] font-black text-orange-600 uppercase mb-2 block tracking-wider">落車區</label>
-                                                <select value={bookingForm.dropoffRegion} onChange={(e)=>setBookingForm({...bookingForm, dropoffRegion: e.target.value})} className="w-full p-3 border border-orange-200 bg-orange-50 rounded-xl font-bold">
+                                                <label className="text-[11px] font-black text-orange-600 uppercase mb-2 block tracking-wider">落車區域 (Hub B)</label>
+                                                <select value={bookingForm.dropoffRegion} onChange={(e)=>setBookingForm({...bookingForm, dropoffRegion: e.target.value})} className="w-full p-3 border border-orange-200 bg-orange-50 rounded-xl font-bold appearance-none">
                                                     {REGIONS.map(r => <option key={r}>{r}</option>)}
                                                 </select>
                                             </div>
                                         </div>
-                                        <button onClick={processBooking} className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black text-lg hover:bg-black transition-all">提交預約</button>
+
+                                        <button 
+                                            onClick={processBooking} 
+                                            disabled={!user}
+                                            className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black text-lg hover:bg-blue-600 transition-all shadow-lg active:scale-95 disabled:bg-slate-300"
+                                        >
+                                            立即提交預約
+                                        </button>
+
                                         {alertMsg.text && (
-                                            <div className={`p-4 rounded-xl text-sm font-bold border ${alertMsg.type==='error'?'bg-red-50 border-red-200 text-red-600':'bg-emerald-50 border-emerald-200 text-emerald-600'}`}>
+                                            <div className={`p-4 rounded-xl text-sm font-bold border flex items-center ${alertMsg.type==='error'?'bg-red-50 border-red-200 text-red-600':'bg-emerald-50 border-emerald-200 text-emerald-600'}`}>
+                                                <Icon name={alertMsg.type==='error'?'alert-circle':'check-circle'} className="mr-2" />
                                                 {alertMsg.text}
                                             </div>
                                         )}
                                     </div>
+
                                     <div className="xl:col-span-2">
-                                        <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl">
-                                            <h3 className="text-xs font-black text-slate-400 uppercase mb-6 flex items-center tracking-widest border-b border-slate-700 pb-3">即時配額檢測</h3>
-                                            <div className="space-y-6">
-                                                <div>
+                                        <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl sticky top-6">
+                                            <h3 className="text-xs font-black text-slate-400 uppercase mb-6 flex items-center tracking-widest border-b border-slate-700 pb-3">
+                                                <Icon name="activity" className="w-4 h-4 mr-2" /> 樞紐負荷監視
+                                            </h3>
+                                            <div className="space-y-8">
+                                                <div className="group">
                                                     <div className="flex justify-between mb-2">
-                                                        <span className="text-xs text-emerald-400 font-bold uppercase">{bookingForm.pickupRegion} (上車)</span>
-                                                        <span className="text-xs font-mono">{currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used} / {currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total}</span>
+                                                        <span className="text-xs text-emerald-400 font-bold uppercase">{bookingForm.pickupRegion} (上車配額)</span>
+                                                        <span className="text-xs font-mono font-bold">
+                                                            {currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used} / {currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total}
+                                                        </span>
                                                     </div>
-                                                    <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-                                                        <div className="bg-emerald-500 h-full transition-all" style={{width: `${(currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used / currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total) * 100}%`}}></div>
+                                                    <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden border border-slate-700">
+                                                        <div 
+                                                            className={`h-full transition-all duration-700 ${currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used >= currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total ? 'bg-red-500' : 'bg-emerald-500'}`}
+                                                            style={{width: `${Math.min(100, (currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used / currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total) * 100)}%`}}
+                                                        ></div>
                                                     </div>
                                                 </div>
-                                                <div>
+                                                <div className="group">
                                                     <div className="flex justify-between mb-2">
-                                                        <span className="text-xs text-orange-400 font-bold uppercase">{bookingForm.dropoffRegion} (落車)</span>
-                                                        <span className="text-xs font-mono">{currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used} / {currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total}</span>
+                                                        <span className="text-xs text-orange-400 font-bold uppercase">{bookingForm.dropoffRegion} (落車配額)</span>
+                                                        <span className="text-xs font-mono font-bold">
+                                                            {currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used} / {currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total}
+                                                        </span>
                                                     </div>
-                                                    <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-                                                        <div className="bg-orange-500 h-full transition-all" style={{width: `${(currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used / currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total) * 100}%`}}></div>
+                                                    <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden border border-slate-700">
+                                                        <div 
+                                                            className={`h-full transition-all duration-700 ${currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used >= currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total ? 'bg-red-500' : 'bg-orange-500'}`}
+                                                            style={{width: `${Math.min(100, (currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used / currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total) * 100)}%`}}
+                                                        ></div>
                                                     </div>
+                                                </div>
+                                                <div className="pt-4 border-t border-slate-800">
+                                                    <p className="text-[10px] text-slate-500 italic leading-relaxed">
+                                                        * 系統實施「樞紐雙向校驗」，任何一端的配額飽和都將無法完成預約。
+                                                    </p>
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
                             ) : (
-                                <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 overflow-x-auto">
-                                    <div className="flex justify-between items-center mb-6">
-                                        <h2 className="text-xl font-black flex items-center"><Icon name="settings" className="w-6 h-6 mr-2 text-blue-600" /> 配額設定 ({selectedDate})</h2>
-                                        <input type="date" value={selectedDate} onChange={(e)=>setSelectedDate(e.target.value)} className="text-xs font-bold bg-blue-50 border-none rounded p-2" />
+                                <div className="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-slate-200 overflow-x-auto">
+                                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+                                        <h2 className="text-xl font-black flex items-center">
+                                            <Icon name="sliders" className="w-6 h-6 mr-2 text-blue-600" /> 配額資源配置樞紐
+                                        </h2>
+                                        <div className="flex items-center bg-slate-100 p-1 rounded-xl">
+                                            <span className="text-[10px] font-black text-slate-400 uppercase px-2">日期切換</span>
+                                            <input type="date" value={selectedDate} onChange={(e)=>setSelectedDate(e.target.value)} className="text-xs font-bold bg-white border border-slate-200 rounded-lg p-2 outline-none" />
+                                        </div>
                                     </div>
-                                    <table className="w-full border-collapse min-w-[600px]">
+                                    <table className="w-full border-collapse min-w-[800px]">
                                         <thead>
                                             <tr className="bg-slate-50 border-b text-[10px] text-slate-400 uppercase">
-                                                <th className="p-4 text-left border-r">區域</th>
+                                                <th className="p-4 text-left border-r w-32">服務區域</th>
                                                 {TIME_SLOTS.map(s => <th key={s} className="p-4 text-center border-r">{s.split(' ')[0]}</th>)}
                                             </tr>
                                         </thead>
                                         <tbody>
                                             {REGIONS.map(region => (
-                                                <tr key={region} className="border-b">
-                                                    <td className="p-4 border-r font-bold text-slate-700">{region}</td>
+                                                <tr key={region} className="border-b hover:bg-slate-50 transition-colors">
+                                                    <td className="p-4 border-r font-black text-slate-700 bg-slate-50/50">{region}</td>
                                                     {TIME_SLOTS.map(slot => (
                                                         <td key={slot} className="p-4 border-r">
-                                                            <div className="space-y-2">
-                                                                <div className="flex items-center text-[10px]">
-                                                                    <span className="w-12 text-emerald-600 font-bold">上車:</span>
-                                                                    <input type="number" value={currentQuota[region][slot].pickup.total} onChange={(e)=>handleQuotaChange(region, slot, 'pickup', 'total', e.target.value)} className="w-12 p-1 border rounded text-center" />
+                                                            <div className="space-y-3">
+                                                                <div className="flex items-center justify-between">
+                                                                    <span className="text-[9px] text-emerald-600 font-black uppercase">上車配額</span>
+                                                                    <input 
+                                                                        type="number" 
+                                                                        value={currentQuota[region][slot].pickup.total} 
+                                                                        onChange={(e)=>handleQuotaChange(region, slot, 'pickup', 'total', e.target.value)} 
+                                                                        className="w-12 p-1 border rounded text-center text-xs font-bold focus:border-blue-500 outline-none" 
+                                                                    />
                                                                 </div>
-                                                                <div className="flex items-center text-[10px]">
-                                                                    <span className="w-12 text-orange-600 font-bold">落車:</span>
-                                                                    <input type="number" value={currentQuota[region][slot].dropoff.total} onChange={(e)=>handleQuotaChange(region, slot, 'dropoff', 'total', e.target.value)} className="w-12 p-1 border rounded text-center" />
+                                                                <div className="flex items-center justify-between">
+                                                                    <span className="text-[9px] text-orange-600 font-black uppercase">落車配額</span>
+                                                                    <input 
+                                                                        type="number" 
+                                                                        value={currentQuota[region][slot].dropoff.total} 
+                                                                        onChange={(e)=>handleQuotaChange(region, slot, 'dropoff', 'total', e.target.value)} 
+                                                                        className="w-12 p-1 border rounded text-center text-xs font-bold focus:border-blue-500 outline-none" 
+                                                                    />
+                                                                </div>
+                                                                <div className="pt-1 border-t flex justify-between text-[9px]">
+                                                                    <span className="text-slate-400">已使用:</span>
+                                                                    <span className="font-mono font-bold text-slate-600">
+                                                                        {currentQuota[region][slot].pickup.used}/{currentQuota[region][slot].dropoff.used}
+                                                                    </span>
                                                                 </div>
                                                             </div>
                                                         </td>
