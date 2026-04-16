@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from "firebase/app";
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
-import { getFirestore, doc, setDoc, collection, onSnapshot, addDoc } from "firebase/firestore";
+import { getFirestore, doc, setDoc, collection, onSnapshot, addDoc, query } from "firebase/firestore";
 import { 
   Bus, 
   UserPlus, 
@@ -18,19 +18,18 @@ import {
   AlertCircle
 } from 'lucide-react';
 
-// --- 常量定義 ---
+// --- 全局配置與常量 ---
 const REGIONS = ['香港島', '九龍東', '九龍西', '新界東', '新界西'];
 const TIME_SLOTS = ['上午繁忙時間 (06:00-10:59)', '中段 (11:00-14:59)', '下午繁忙時間 (15:00-19:59)', '晚上 (20:00-23:59)'];
 const PURPOSES = ['就診/治療', '上班/上學', '康復訓練', '社交/娛樂', '其他'];
 
-// --- 初始化 Firebase ---
 const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'rehabus-hub-global';
 
-// --- 預設配額生成器 ---
+// 預設配額結構生成
 const generateDefaultQuota = () => {
   const quota = {};
   REGIONS.forEach(region => {
@@ -45,6 +44,7 @@ const generateDefaultQuota = () => {
   return quota;
 };
 
+// --- 主組件 ---
 export default function App() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState('process');
@@ -61,7 +61,7 @@ export default function App() {
     timeSlot: TIME_SLOTS[0],
   });
 
-  // 1. 身份驗證
+  // 1. 身份驗證初始化 (符合 RULE 3)
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -71,7 +71,7 @@ export default function App() {
           await signInAnonymously(auth);
         }
       } catch (err) {
-        console.error("Auth error:", err);
+        console.error("Auth Error:", err);
       }
     };
     initAuth();
@@ -81,150 +81,150 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // 2. 實時數據同步
+  // 2. 實時數據監聽
   useEffect(() => {
     if (!user) return;
 
-    // 同步預約記錄
-    const bookingsCol = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
-    const unsubBookings = onSnapshot(bookingsCol, (snapshot) => {
-      const list = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
-      setBookings(list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-    }, (err) => console.error("Bookings sync error:", err));
-
-    // 同步當日配額
+    // 監聽當日配額
     const quotaDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'quotas', selectedDate);
     const unsubQuotas = onSnapshot(quotaDocRef, (docSnap) => {
       if (docSnap.exists()) {
         setQuotasData(prev => ({ ...prev, [selectedDate]: docSnap.data() }));
       } else {
-        const defaultData = generateDefaultQuota();
-        setDoc(quotaDocRef, defaultData);
-        setQuotasData(prev => ({ ...prev, [selectedDate]: defaultData }));
+        const initial = generateDefaultQuota();
+        setDoc(quotaDocRef, initial);
+        setQuotasData(prev => ({ ...prev, [selectedDate]: initial }));
       }
-    }, (err) => console.error("Quota sync error:", err));
+    }, (err) => console.error("Quota Listen Error:", err));
+
+    // 監聽預約記錄 (簡單查詢符合 RULE 2)
+    const bookingsCol = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
+    const unsubBookings = onSnapshot(bookingsCol, (snapshot) => {
+      const list = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
+      setBookings(list);
+    }, (err) => console.error("Bookings Listen Error:", err));
 
     return () => {
-      unsubBookings();
       unsubQuotas();
+      unsubBookings();
     };
   }, [user, selectedDate]);
 
-  // 計算屬性
+  // 當前配額計算
   const currentQuota = useMemo(() => {
     return quotasData[selectedDate] || generateDefaultQuota();
   }, [quotasData, selectedDate]);
 
-  // 處理預約提交
-  const processBooking = async () => {
-    if (!user) return;
-    if (!bookingForm.applicantName.trim()) {
-      setAlertMsg({ type: 'error', text: '請輸入申請者姓名' });
+  // 處理提交
+  const handleBookingSubmit = async () => {
+    if (!user || !bookingForm.applicantName.trim()) {
+      setAlertMsg({ type: 'error', text: '請填寫申請人姓名' });
       return;
     }
 
-    const pickupQuota = currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup;
-    const dropoffQuota = currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff;
+    const { pickupRegion, dropoffRegion, timeSlot } = bookingForm;
+    const pQuota = currentQuota[pickupRegion][timeSlot].pickup;
+    const dQuota = currentQuota[dropoffRegion][timeSlot].dropoff;
 
-    if (pickupQuota.used >= pickupQuota.total || dropoffQuota.used >= dropoffQuota.total) {
-      setAlertMsg({ type: 'error', text: '預約失敗：該區域時段配額已滿' });
+    if (pQuota.used >= pQuota.total || dQuota.used >= dQuota.total) {
+      setAlertMsg({ type: 'error', text: '預約失敗：該區配額已滿' });
       return;
     }
 
     try {
+      // 更新配額
       const quotaDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'quotas', selectedDate);
-      const updatedQuota = JSON.parse(JSON.stringify(currentQuota));
-      updatedQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used += 1;
-      updatedQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used += 1;
-      
-      await setDoc(quotaDocRef, updatedQuota);
+      const updated = JSON.parse(JSON.stringify(currentQuota));
+      updated[pickupRegion][timeSlot].pickup.used += 1;
+      updated[dropoffRegion][timeSlot].dropoff.used += 1;
+      await setDoc(quotaDocRef, updated);
 
+      // 新增記錄
       const bookingsCol = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
       await addDoc(bookingsCol, {
         ...bookingForm,
         bookingDate: selectedDate,
         createdAt: Date.now(),
-        userId: user.uid
+        uid: user.uid
       });
 
-      setAlertMsg({ type: 'success', text: '預約已成功提交！' });
-      setBookingForm(prev => ({ ...prev, applicantName: '', purpose: PURPOSES[0] }));
+      setAlertMsg({ type: 'success', text: '預約已成功！' });
+      setBookingForm(prev => ({ ...prev, applicantName: '' }));
       setTimeout(() => setAlertMsg({ type: '', text: '' }), 3000);
     } catch (err) {
-      setAlertMsg({ type: 'error', text: '提交失敗，請檢查網絡連接' });
+      setAlertMsg({ type: 'error', text: '系統錯誤，請再試一次' });
     }
   };
 
-  // 處理配額修改
-  const handleQuotaChange = async (region, slot, type, field, value) => {
+  const updateQuotaSetting = async (region, slot, type, field, val) => {
     if (!user) return;
-    const val = Math.max(0, parseInt(value) || 0);
-    const updatedQuota = JSON.parse(JSON.stringify(currentQuota));
-    updatedQuota[region][slot][type][field] = val;
-    
+    const updated = JSON.parse(JSON.stringify(currentQuota));
+    updated[region][slot][type][field] = Math.max(0, parseInt(val) || 0);
     const quotaDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'quotas', selectedDate);
-    await setDoc(quotaDocRef, updatedQuota);
+    await setDoc(quotaDocRef, updated);
   };
 
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-900">
-        <div className="text-white flex flex-col items-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mb-4"></div>
-          <p className="font-bold tracking-widest text-sm uppercase">正在連線至資源樞紐...</p>
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="text-white text-center">
+          <div className="animate-spin h-10 w-10 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+          <p className="font-bold tracking-widest">系統安全連線中...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      {/* 頂部導航 */}
-      <header className="bg-slate-900 text-white p-4 shadow-xl flex justify-between items-center border-b-4 border-blue-600 sticky top-0 z-50">
-        <div className="flex items-center space-x-3">
-          <Bus className="w-8 h-8 text-blue-400" />
-          <h1 className="text-xl font-black uppercase tracking-tight">Rehabus Hub <span className="text-blue-500">管理系統</span></h1>
-        </div>
-        <div className="flex items-center space-x-4">
-          <div className="hidden md:block text-[10px] text-slate-400 font-mono bg-slate-800 px-3 py-1 rounded-full border border-slate-700">
-            ID: {user.uid.substring(0, 12)}...
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
+      {/* Header */}
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-50 p-4 shadow-sm">
+        <div className="max-w-7xl mx-auto flex justify-between items-center">
+          <div className="flex items-center space-x-2">
+            <div className="bg-blue-600 p-2 rounded-lg text-white">
+              <Bus className="w-6 h-6" />
+            </div>
+            <h1 className="text-xl font-black text-slate-800 tracking-tighter">Rehabus Hub <span className="text-blue-600">管理系統</span></h1>
+          </div>
+          <div className="text-[10px] font-mono bg-slate-100 px-3 py-1 rounded-full text-slate-500 border border-slate-200">
+            LOGIN: {user.uid}
           </div>
         </div>
       </header>
 
       <div className="max-w-7xl mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* 左側欄 */}
-        <aside className="space-y-4">
+        {/* Sidebar */}
+        <nav className="space-y-4">
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
             <button 
-              onClick={() => setActiveTab('process')} 
-              className={`w-full flex items-center p-4 transition-all ${activeTab === 'process' ? 'bg-blue-600 text-white shadow-inner' : 'text-slate-600 hover:bg-slate-50'}`}
+              onClick={() => setActiveTab('process')}
+              className={`w-full flex items-center p-4 font-bold transition-all ${activeTab === 'process' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
             >
-              <UserPlus className="w-5 h-5 mr-3" /> <span className="font-bold">新增預約申請</span>
+              <UserPlus className="w-5 h-5 mr-3" /> 新增預約申請
             </button>
             <button 
-              onClick={() => setActiveTab('manage')} 
-              className={`w-full flex items-center p-4 transition-all ${activeTab === 'manage' ? 'bg-blue-600 text-white shadow-inner' : 'text-slate-600 hover:bg-slate-50'}`}
+              onClick={() => setActiveTab('manage')}
+              className={`w-full flex items-center p-4 font-bold transition-all ${activeTab === 'manage' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
             >
-              <Settings className="w-5 h-5 mr-3" /> <span className="font-bold">配額樞紐設定</span>
+              <Settings className="w-5 h-5 mr-3" /> 配額樞紐設定
             </button>
           </div>
 
-          <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
-            <h3 className="text-xs font-black text-slate-400 uppercase mb-3 flex items-center tracking-widest">
-              <History className="w-4 h-4 mr-2" /> 最近預約記錄 ({selectedDate})
+          <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center">
+              <History className="w-4 h-4 mr-2" /> 今日預約 ({selectedDate})
             </h3>
-            <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+            <div className="space-y-3 max-h-[400px] overflow-y-auto">
               {bookings.filter(b => b.bookingDate === selectedDate).length === 0 ? (
-                <div className="text-center py-8 text-slate-300 italic text-xs">尚無預約資料</div>
+                <p className="text-center py-10 text-slate-300 italic text-sm font-medium">尚無預約</p>
               ) : (
                 bookings.filter(b => b.bookingDate === selectedDate).map(b => (
-                  <div key={b.id} className="text-[11px] p-3 bg-slate-50 rounded-xl border border-slate-100 transition-colors hover:border-blue-200 group">
+                  <div key={b.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100">
                     <div className="flex justify-between items-start mb-1">
-                      <span className="font-bold text-slate-800">{b.applicantName}</span>
-                      <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-bold scale-90">{b.purpose}</span>
+                      <span className="font-bold text-slate-800 text-sm">{b.applicantName}</span>
+                      <span className="text-[10px] bg-white border px-1.5 py-0.5 rounded text-slate-500 font-bold">{b.purpose}</span>
                     </div>
-                    <div className="text-slate-500 flex items-center">
+                    <div className="text-[11px] text-slate-500 flex items-center">
                       <MapPin className="w-3 h-3 mr-1" /> {b.pickupRegion} → {b.dropoffRegion}
                     </div>
                   </div>
@@ -232,143 +232,123 @@ export default function App() {
               )}
             </div>
           </div>
-        </aside>
+        </nav>
 
-        {/* 主內容區 */}
+        {/* Main */}
         <main className="lg:col-span-3 space-y-6">
           {activeTab === 'process' ? (
             <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
               <div className="xl:col-span-3 bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-slate-200 space-y-6">
-                <div className="flex justify-between items-center border-b pb-4">
-                  <h2 className="text-lg font-black text-slate-800 flex items-center tracking-tight">
-                    <ClipboardList className="w-5 h-5 mr-2 text-blue-600" /> 填寫乘車申請
-                  </h2>
-                </div>
+                <h2 className="text-lg font-black text-slate-800 flex items-center">
+                  <ClipboardList className="w-5 h-5 mr-2 text-blue-600" /> 填寫預約表單
+                </h2>
                 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="col-span-2 md:col-span-1">
-                    <label className="text-[11px] font-black text-slate-500 uppercase mb-2 block tracking-wider">乘車日期</label>
-                    <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full p-3 border rounded-xl bg-slate-50 font-bold focus:ring-2 focus:ring-blue-500 outline-none transition-all" />
+                    <label className="text-xs font-bold text-slate-400 mb-1.5 block">日期</label>
+                    <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full p-3 border rounded-xl bg-slate-50 font-bold" />
                   </div>
                   <div className="col-span-2 md:col-span-1">
-                    <label className="text-[11px] font-black text-slate-500 uppercase mb-2 block tracking-wider">申請人姓名</label>
-                    <input type="text" value={bookingForm.applicantName} onChange={(e) => setBookingForm({ ...bookingForm, applicantName: e.target.value })} className="w-full p-3 border rounded-xl bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none transition-all" placeholder="輸入全名" />
+                    <label className="text-xs font-bold text-slate-400 mb-1.5 block">申請人姓名</label>
+                    <input type="text" value={bookingForm.applicantName} onChange={(e) => setBookingForm({...bookingForm, applicantName: e.target.value})} className="w-full p-3 border rounded-xl" placeholder="請輸入姓名" />
                   </div>
                   <div className="col-span-2 md:col-span-1">
-                    <label className="text-[11px] font-black text-blue-600 mb-2 block tracking-wider">預約時段</label>
-                    <select value={bookingForm.timeSlot} onChange={(e) => setBookingForm({ ...bookingForm, timeSlot: e.target.value })} className="w-full p-3 border border-blue-200 bg-blue-50 rounded-xl font-bold cursor-pointer transition-all">
+                    <label className="text-xs font-bold text-blue-600 mb-1.5 block">時段</label>
+                    <select value={bookingForm.timeSlot} onChange={(e) => setBookingForm({...bookingForm, timeSlot: e.target.value})} className="w-full p-3 border border-blue-200 bg-blue-50 rounded-xl font-bold">
                       {TIME_SLOTS.map(s => <option key={s}>{s}</option>)}
                     </select>
                   </div>
                   <div className="col-span-2 md:col-span-1">
-                    <label className="text-[11px] font-black text-slate-500 mb-2 block tracking-wider">用車目的</label>
-                    <select value={bookingForm.purpose} onChange={(e) => setBookingForm({ ...bookingForm, purpose: e.target.value })} className="w-full p-3 border rounded-xl bg-slate-50 transition-all">
+                    <label className="text-xs font-bold text-slate-400 mb-1.5 block">目的</label>
+                    <select value={bookingForm.purpose} onChange={(e) => setBookingForm({...bookingForm, purpose: e.target.value})} className="w-full p-3 border rounded-xl">
                       {PURPOSES.map(p => <option key={p}>{p}</option>)}
                     </select>
                   </div>
                   <div className="col-span-2 md:col-span-1">
-                    <label className="text-[11px] font-black text-emerald-600 mb-2 block tracking-wider">上車區域</label>
-                    <select value={bookingForm.pickupRegion} onChange={(e) => setBookingForm({ ...bookingForm, pickupRegion: e.target.value })} className="w-full p-3 border border-emerald-200 bg-emerald-50 rounded-xl font-bold transition-all">
+                    <label className="text-xs font-bold text-emerald-600 mb-1.5 block">上車區域</label>
+                    <select value={bookingForm.pickupRegion} onChange={(e) => setBookingForm({...bookingForm, pickupRegion: e.target.value})} className="w-full p-3 border border-emerald-200 bg-emerald-50 rounded-xl font-bold">
                       {REGIONS.map(r => <option key={r}>{r}</option>)}
                     </select>
                   </div>
                   <div className="col-span-2 md:col-span-1">
-                    <label className="text-[11px] font-black text-orange-600 mb-2 block tracking-wider">落車區域</label>
-                    <select value={bookingForm.dropoffRegion} onChange={(e) => setBookingForm({ ...bookingForm, dropoffRegion: e.target.value })} className="w-full p-3 border border-orange-200 bg-orange-50 rounded-xl font-bold transition-all">
+                    <label className="text-xs font-bold text-orange-600 mb-1.5 block">落車區域</label>
+                    <select value={bookingForm.dropoffRegion} onChange={(e) => setBookingForm({...bookingForm, dropoffRegion: e.target.value})} className="w-full p-3 border border-orange-200 bg-orange-50 rounded-xl font-bold">
                       {REGIONS.map(r => <option key={r}>{r}</option>)}
                     </select>
                   </div>
                 </div>
 
                 <button 
-                  onClick={processBooking} 
-                  className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black text-lg hover:bg-blue-600 active:scale-[0.98] transition-all shadow-lg shadow-slate-200"
+                  onClick={handleBookingSubmit}
+                  className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black text-lg hover:bg-blue-600 transition-all active:scale-95 shadow-lg"
                 >
-                  立即提交預約
+                  確認並提交預約
                 </button>
 
                 {alertMsg.text && (
-                  <div className={`p-4 rounded-xl text-sm font-bold border flex items-center animate-in fade-in slide-in-from-top-4 duration-300 ${alertMsg.type === 'error' ? 'bg-red-50 border-red-200 text-red-600' : 'bg-emerald-50 border-emerald-200 text-emerald-600'}`}>
-                    {alertMsg.type === 'error' ? <AlertCircle className="mr-2 w-4 h-4" /> : <CheckCircle className="mr-2 w-4 h-4" />}
+                  <div className={`p-4 rounded-xl border flex items-center font-bold text-sm ${alertMsg.type === 'error' ? 'bg-red-50 border-red-100 text-red-600' : 'bg-emerald-50 border-emerald-100 text-emerald-600'}`}>
+                    {alertMsg.type === 'error' ? <AlertCircle className="w-4 h-4 mr-2" /> : <CheckCircle className="w-4 h-4 mr-2" />}
                     {alertMsg.text}
                   </div>
                 )}
               </div>
 
-              <div className="xl:col-span-2 bg-slate-900 text-white p-6 rounded-3xl shadow-xl h-fit sticky top-24">
-                <h3 className="text-xs font-black text-slate-400 uppercase mb-6 flex items-center border-b border-slate-700 pb-3">
-                  <Activity className="w-4 h-4 mr-2" /> 當前選擇負荷監視
-                </h3>
-                <div className="space-y-8">
-                  {['pickup', 'dropoff'].map(type => {
-                    const region = type === 'pickup' ? bookingForm.pickupRegion : bookingForm.dropoffRegion;
-                    const data = currentQuota[region][bookingForm.timeSlot][type];
-                    const pct = Math.min(100, (data.used / data.total) * 100 || 0);
-                    return (
-                      <div key={type}>
-                        <div className="flex justify-between mb-2 text-xs font-bold uppercase tracking-widest">
-                          <span className={type === 'pickup' ? 'text-emerald-400' : 'text-orange-400'}>
-                            {region} ({type === 'pickup' ? '上車' : '落車'})
-                          </span>
-                          <span>{data.used} / {data.total}</span>
+              <div className="xl:col-span-2 space-y-4">
+                <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl">
+                  <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest mb-6 flex items-center">
+                    <Activity className="w-4 h-4 mr-2" /> 當前選擇負荷
+                  </h3>
+                  <div className="space-y-6">
+                    {['pickup', 'dropoff'].map(type => {
+                      const region = type === 'pickup' ? bookingForm.pickupRegion : bookingForm.dropoffRegion;
+                      const data = currentQuota[region][bookingForm.timeSlot][type];
+                      const pct = Math.min(100, (data.used / data.total) * 100 || 0);
+                      return (
+                        <div key={type}>
+                          <div className="flex justify-between text-[10px] font-bold mb-1.5">
+                            <span className={type === 'pickup' ? 'text-emerald-400' : 'text-orange-400'}>{region} ({type === 'pickup' ? '上車' : '落車'})</span>
+                            <span>{data.used} / {data.total}</span>
+                          </div>
+                          <div className="h-2.5 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
+                            <div className={`h-full transition-all duration-700 ${pct > 80 ? 'bg-red-500' : (type === 'pickup' ? 'bg-emerald-500' : 'bg-orange-500')}`} style={{ width: `${pct}%` }}></div>
+                          </div>
                         </div>
-                        <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden border border-slate-700">
-                          <div 
-                            className={`h-full transition-all duration-700 ${pct > 80 ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]' : (type === 'pickup' ? 'bg-emerald-500' : 'bg-orange-500')}`} 
-                            style={{ width: `${pct}%` }}
-                          ></div>
-                        </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
-                <p className="mt-8 text-[10px] text-slate-500 leading-relaxed italic border-t border-slate-800 pt-4">
-                  * 數據實時從雲端資料庫讀取。若負荷超過 80% 系統將顯示紅色警示。
-                </p>
               </div>
             </div>
           ) : (
-            <div className="space-y-6 animate-in fade-in duration-500">
-              {/* 配額設定表單 */}
-              <div className="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-slate-200 overflow-x-auto">
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 space-y-4 md:space-y-0">
-                  <h2 className="text-xl font-black flex items-center tracking-tight">
-                    <Sliders className="w-6 h-6 mr-2 text-blue-600" /> 配額資源配置樞紐
+            <div className="space-y-6">
+              <div className="bg-white p-6 rounded-3xl border border-slate-200 overflow-x-auto shadow-sm">
+                <div className="flex justify-between items-center mb-6">
+                  <h2 className="text-lg font-black text-slate-800 flex items-center">
+                    <Sliders className="w-5 h-5 mr-2 text-blue-600" /> 配額配置管理
                   </h2>
-                  <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="p-2 border rounded-xl text-sm font-bold bg-slate-50 outline-blue-500" />
+                  <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="p-2 border rounded-xl text-sm font-bold bg-slate-50" />
                 </div>
-                
-                <table className="w-full border-collapse min-w-[800px]">
-                  <thead>
-                    <tr className="bg-slate-50 border-b text-[10px] text-slate-400 uppercase tracking-widest">
-                      <th className="p-4 text-left border-r w-32">服務區域</th>
-                      {TIME_SLOTS.map(s => <th key={s} className="p-4 text-center border-r font-black">{s.split(' ')[0]}</th>)}
+                <table className="w-full border-collapse min-w-[700px]">
+                  <thead className="bg-slate-50 border-b">
+                    <tr>
+                      <th className="p-3 text-left text-[10px] text-slate-400 uppercase tracking-widest font-black">區域</th>
+                      {TIME_SLOTS.map(s => <th key={s} className="p-3 text-center text-[10px] text-slate-400 uppercase tracking-widest font-black border-l">{s.split(' ')[0]}</th>)}
                     </tr>
                   </thead>
                   <tbody>
                     {REGIONS.map(region => (
-                      <tr key={region} className="border-b group hover:bg-slate-50/50 transition-colors">
-                        <td className="p-4 border-r font-black text-slate-700 bg-slate-50/30">{region}</td>
+                      <tr key={region} className="border-b">
+                        <td className="p-3 font-bold text-slate-700 text-sm">{region}</td>
                         {TIME_SLOTS.map(slot => (
-                          <td key={slot} className="p-4 border-r">
-                            <div className="flex flex-col space-y-2">
+                          <td key={slot} className="p-3 border-l">
+                            <div className="space-y-2">
                               <div className="flex items-center space-x-2">
-                                <span className="text-[9px] font-bold text-emerald-600 w-8">上車</span>
-                                <input 
-                                  type="number" 
-                                  value={currentQuota[region][slot].pickup.total} 
-                                  onChange={(e) => handleQuotaChange(region, slot, 'pickup', 'total', e.target.value)} 
-                                  className="w-full p-1.5 border rounded-lg text-xs text-center font-bold focus:border-blue-500 outline-none" 
-                                />
+                                <span className="text-[9px] font-black text-emerald-600 w-6">P</span>
+                                <input type="number" value={currentQuota[region][slot].pickup.total} onChange={(e) => updateQuotaSetting(region, slot, 'pickup', 'total', e.target.value)} className="w-full p-1 border rounded text-xs text-center font-bold" />
                               </div>
                               <div className="flex items-center space-x-2">
-                                <span className="text-[9px] font-bold text-orange-600 w-8">落車</span>
-                                <input 
-                                  type="number" 
-                                  value={currentQuota[region][slot].dropoff.total} 
-                                  onChange={(e) => handleQuotaChange(region, slot, 'dropoff', 'total', e.target.value)} 
-                                  className="w-full p-1.5 border rounded-lg text-xs text-center font-bold focus:border-blue-500 outline-none" 
-                                />
+                                <span className="text-[9px] font-black text-orange-600 w-6">D</span>
+                                <input type="number" value={currentQuota[region][slot].dropoff.total} onChange={(e) => updateQuotaSetting(region, slot, 'dropoff', 'total', e.target.value)} className="w-full p-1 border rounded text-xs text-center font-bold" />
                               </div>
                             </div>
                           </td>
@@ -379,67 +359,39 @@ export default function App() {
                 </table>
               </div>
 
-              {/* 時段分類概覽區 */}
+              {/* 時段概覽 */}
               <div className="bg-slate-900 p-8 rounded-3xl shadow-xl">
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 border-b border-slate-700 pb-6 space-y-4 md:space-y-0">
-                  <div>
-                    <h3 className="text-white font-black text-xl flex items-center tracking-tight">
-                      <LayoutGrid className="w-7 h-7 mr-3 text-blue-400" /> 全港配額時段分佈概覽
-                    </h3>
-                    <p className="text-slate-500 text-[11px] mt-1 font-bold">按時段分類監控全港各區的上車(P)與落車(D)負荷</p>
-                  </div>
-                  <div className="flex space-x-4">
-                    <div className="flex items-center px-3 py-1 bg-emerald-500/10 rounded-lg border border-emerald-500/20">
-                      <div className="w-2 h-2 bg-emerald-500 rounded-full mr-2"></div>
-                      <span className="text-[9px] text-emerald-400 font-bold uppercase">上車負荷</span>
-                    </div>
-                    <div className="flex items-center px-3 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20">
-                      <div className="w-2 h-2 bg-orange-500 rounded-full mr-2"></div>
-                      <span className="text-[9px] text-orange-400 font-bold uppercase">落車負荷</span>
-                    </div>
-                  </div>
-                </div>
-                
+                <h3 className="text-white font-black text-lg flex items-center mb-8 border-b border-slate-700 pb-4">
+                  <LayoutGrid className="w-6 h-6 mr-3 text-blue-400" /> 全港時段負荷概覽
+                </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                   {TIME_SLOTS.map(slot => (
-                    <div key={slot} className="bg-slate-800/40 p-6 rounded-2xl border border-slate-700/50 hover:border-blue-500/30 transition-all group">
-                      <div className="flex justify-between items-center mb-6 border-b border-slate-700/50 pb-3">
-                        <span className="text-white font-black text-md flex items-center group-hover:text-blue-400 transition-colors">
-                          <Clock className="w-4 h-4 mr-2" /> {slot.split(' ')[0]}
-                        </span>
-                        <span className="text-[10px] font-mono text-slate-500 bg-slate-950 px-2 py-1 rounded border border-slate-700">{slot.split(' ')[1]}</span>
+                    <div key={slot} className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
+                      <div className="flex justify-between items-center mb-6">
+                        <span className="text-white font-black text-sm"><Clock className="w-4 h-4 inline mr-2" /> {slot.split(' ')[0]}</span>
+                        <span className="text-[9px] font-mono text-slate-500">{slot.split(' ')[1]}</span>
                       </div>
-                      
-                      <div className="space-y-6">
+                      <div className="space-y-5">
                         {REGIONS.map(region => {
                           const p = currentQuota[region][slot].pickup;
                           const d = currentQuota[region][slot].dropoff;
-                          const pPct = Math.min(100, (p.used / p.total) * 100 || 0);
-                          const dPct = Math.min(100, (d.used / d.total) * 100 || 0);
-                          
+                          const pPct = (p.used / p.total) * 100;
+                          const dPct = (d.used / d.total) * 100;
                           return (
-                            <div key={region} className="group/item">
-                              <div className="flex justify-between mb-1.5">
-                                <span className="text-slate-400 font-bold text-[11px] group-hover/item:text-slate-200 transition-colors">{region}</span>
-                                <div className="flex space-x-3 text-[9px] font-mono font-bold">
-                                  <span className={pPct > 80 ? 'text-red-400' : 'text-emerald-500'}>P:{Math.round(pPct)}%</span>
-                                  <span className={dPct > 80 ? 'text-red-400' : 'text-orange-500'}>D:{Math.round(dPct)}%</span>
+                            <div key={region}>
+                              <div className="flex justify-between text-[10px] mb-1.5 font-bold">
+                                <span className="text-slate-400">{region}</span>
+                                <div className="space-x-2">
+                                  <span className={pPct > 80 ? 'text-red-400' : 'text-emerald-500'}>P: {Math.round(pPct)}%</span>
+                                  <span className={dPct > 80 ? 'text-red-400' : 'text-orange-500'}>D: {Math.round(dPct)}%</span>
                                 </div>
                               </div>
-                              <div className="flex flex-col space-y-1">
-                                {/* 上車進度條 */}
-                                <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden">
-                                  <div 
-                                    className={`h-full rounded-full transition-all duration-1000 ${pPct > 80 ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : 'bg-emerald-500'}`} 
-                                    style={{ width: `${pPct}%` }}
-                                  ></div>
+                              <div className="space-y-1">
+                                <div className="h-1.5 bg-slate-950 rounded-full overflow-hidden">
+                                  <div className={`h-full ${pPct > 80 ? 'bg-red-500' : 'bg-emerald-500'}`} style={{ width: `${pPct}%` }}></div>
                                 </div>
-                                {/* 落車進度條 */}
-                                <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden">
-                                  <div 
-                                    className={`h-full rounded-full transition-all duration-1000 ${dPct > 80 ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : 'bg-orange-500'}`} 
-                                    style={{ width: `${dPct}%` }}
-                                  ></div>
+                                <div className="h-1.5 bg-slate-950 rounded-full overflow-hidden">
+                                  <div className={`h-full ${dPct > 80 ? 'bg-red-500' : 'bg-orange-500'}`} style={{ width: `${dPct}%` }}></div>
                                 </div>
                               </div>
                             </div>
@@ -449,10 +401,9 @@ export default function App() {
                     </div>
                   ))}
                 </div>
-
-                <div className="mt-10 flex items-center justify-center p-4 bg-slate-800/30 rounded-2xl border border-slate-700/50">
-                  <Info className="w-4 h-4 text-blue-400 mr-2" />
-                  <p className="text-[10px] text-slate-400 font-medium">提示：本視圖會自動根據「配額樞紐設定」中填寫的數據進行更新。紅色表示該區域在該時段的配額已使用超過 80%。</p>
+                <div className="mt-8 flex items-center p-4 bg-slate-800/30 rounded-xl">
+                  <Info className="w-4 h-4 text-blue-400 mr-3 shrink-0" />
+                  <p className="text-[10px] text-slate-400 font-medium">數據提示：系統自動監控全港各區的即時用車量。當進度條超過 80% 時會自動顯示為紅色，提醒管理員需協調資源。</p>
                 </div>
               </div>
             </div>
