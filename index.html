@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>復康巴士資源樞紐系統 - Rehabus Hub (Cloud Storage)</title>
+    <title>復康巴士資源樞紐系統 - Rehabus Hub</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- React & ReactDOM -->
@@ -51,7 +51,6 @@
             console.error("Config parsing error", e);
         }
 
-        // 初始化 Firebase 並掛載至全域以供 React 使用
         if (firebaseConfig) {
             const app = initializeApp(firebaseConfig);
             const auth = getAuth(app);
@@ -64,7 +63,6 @@
                 isDemo: false
             };
         } else {
-            // 如果沒有配置，進入演示模式
             window.FB_SERVICES = { 
                 isDemo: true,
                 onAuthStateChanged: (auth, callback) => {
@@ -100,7 +98,6 @@
         const TIME_SLOTS = ['上午繁忙時間 (06:00-10:59)', '中段 (11:00-14:59)', '下午繁忙時間 (15:00-19:59)', '晚上 (20:00-23:59)'];
         const PURPOSES = ['就診/治療', '上班/上學', '康復訓練', '社交/娛樂', '日常購物', '其他'];
 
-        // 生成初始配額數據
         const generateDefaultQuota = () => {
             const quota = {};
             REGIONS.forEach(region => {
@@ -117,12 +114,13 @@
 
         function App() {
             const [user, setUser] = useState(null);
-            const [activeTab, setActiveTab] = useState('process');
+            const [role, setRole] = useState('cs'); // 'cs' (顧客服務部) 或 'ops' (車務部)
             const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
             const [quotasData, setQuotasData] = useState({});
             const [bookings, setBookings] = useState([]);
             const [alertMsg, setAlertMsg] = useState({ type: '', text: '' });
             const [loading, setLoading] = useState(true);
+            const [isEditingQuota, setIsEditingQuota] = useState(false); // 新增：控制配額是否允許編輯的狀態
 
             const [bookingForm, setBookingForm] = useState({
                 applicantName: '',
@@ -166,19 +164,17 @@
                 return () => clearInterval(checkServices);
             }, []);
 
-            // 數據實時同步 (Firestore)
+            // 數據實時同步
             useEffect(() => {
                 if (!user || window.FB_SERVICES?.isDemo) return;
                 const { db, appId, collection, doc, onSnapshot, setDoc } = window.FB_SERVICES;
 
-                // 監聽所有預約記錄
                 const bookingsCol = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
                 const unsubBookings = onSnapshot(bookingsCol, (snapshot) => {
                     const list = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
                     setBookings(list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
                 }, (err) => console.error("Bookings load error:", err));
 
-                // 監聽特定日期配額
                 const quotaDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'quotas', selectedDate);
                 const unsubQuotas = onSnapshot(quotaDocRef, (docSnap) => {
                     if (docSnap.exists()) {
@@ -197,12 +193,11 @@
                 return () => { unsubBookings(); unsubQuotas(); };
             }, [user, selectedDate]);
 
-            // 當前日期的配額數據
             const currentQuota = useMemo(() => {
                 return quotasData[selectedDate] || generateDefaultQuota();
             }, [quotasData, selectedDate]);
 
-            // 執行預約邏輯
+            // 顧客服務部：提交預約
             const processBooking = async () => {
                 if (!user) return;
                 if (!bookingForm.applicantName.trim()) {
@@ -225,14 +220,12 @@
                 }
 
                 try {
-                    // 更新配額計數
                     const quotaDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'quotas', selectedDate);
                     const updatedQuota = JSON.parse(JSON.stringify(currentQuota));
                     updatedQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used += 1;
                     updatedQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used += 1;
                     await setDoc(quotaDocRef, updatedQuota);
 
-                    // 寫入預約單
                     const bookingsCol = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
                     await addDoc(bookingsCol, {
                         ...bookingForm,
@@ -249,7 +242,7 @@
                 }
             };
 
-            // 管理員修改配額上限
+            // 車務部：修改配額
             const handleQuotaChange = async (region, slot, hub, field, value) => {
                 if (!user || window.FB_SERVICES.isDemo) return;
                 const { db, appId, doc, setDoc } = window.FB_SERVICES;
@@ -266,7 +259,7 @@
                     <div className="flex items-center justify-center h-screen bg-slate-50">
                         <div className="text-center">
                             <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-                            <p className="font-bold text-slate-500">正在連線至資源樞紐...</p>
+                            <p className="font-bold text-slate-500">系統載入中...</p>
                         </div>
                     </div>
                 );
@@ -282,22 +275,44 @@
                     <header className="bg-slate-900 text-white p-4 shadow-xl flex justify-between items-center border-b-4 border-blue-600">
                         <div className="flex items-center space-x-3">
                             <Icon name="bus" className="w-8 h-8 text-blue-400" />
-                            <h1 className="text-xl font-black uppercase tracking-tight">Rehabus Hub | 雲端管理系統</h1>
+                            <h1 className="text-xl font-black uppercase tracking-tight">Rehabus Hub</h1>
                         </div>
-                        <div className="hidden md:block text-[10px] text-slate-400 font-mono bg-slate-800 px-3 py-1 rounded-full border border-slate-700">
-                            ID: {user?.uid?.slice(0, 16) || 'CONNECTING...'}
+                        
+                        {/* 角色切換開關 */}
+                        <div className="flex items-center space-x-4">
+                            <div className="bg-slate-800 p-1 rounded-xl flex">
+                                <button 
+                                    onClick={() => setRole('cs')}
+                                    className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${role === 'cs' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+                                >
+                                    顧客服務部
+                                </button>
+                                <button 
+                                    onClick={() => setRole('ops')}
+                                    className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${role === 'ops' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+                                >
+                                    車務部
+                                </button>
+                            </div>
+                            <div className="hidden md:block text-[10px] text-slate-400 font-mono bg-slate-800 px-3 py-2 rounded-lg border border-slate-700">
+                                ID: {user?.uid?.slice(0, 8) || 'CONNECTING...'}
+                            </div>
                         </div>
                     </header>
 
                     <div className="max-w-7xl mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
                         <aside className="space-y-4">
                             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                                <button onClick={()=>setActiveTab('process')} className={`w-full flex items-center p-4 transition ${activeTab==='process'?'bg-blue-600 text-white':'text-slate-600 hover:bg-slate-50'}`}>
-                                    <Icon name="user-plus" className="w-5 h-5 mr-3" /> <span className="font-bold">新增預約申請</span>
-                                </button>
-                                <button onClick={()=>setActiveTab('manage')} className={`w-full flex items-center p-4 transition ${activeTab==='manage'?'bg-blue-600 text-white':'text-slate-600 hover:bg-slate-50'}`}>
-                                    <Icon name="settings" className="w-5 h-5 mr-3" /> <span className="font-bold">配額樞紐設定</span>
-                                </button>
+                                {/* 根據角色顯示對應的選單 */}
+                                {role === 'cs' ? (
+                                    <div className="w-full flex items-center p-4 bg-blue-50 text-blue-700 border-l-4 border-blue-600 cursor-default">
+                                        <Icon name="user-plus" className="w-5 h-5 mr-3" /> <span className="font-bold">新增預約申請</span>
+                                    </div>
+                                ) : (
+                                    <div className="w-full flex items-center p-4 bg-blue-50 text-blue-700 border-l-4 border-blue-600 cursor-default">
+                                        <Icon name="settings" className="w-5 h-5 mr-3" /> <span className="font-bold">配額資源樞紐</span>
+                                    </div>
+                                )}
                             </div>
 
                             <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
@@ -328,8 +343,9 @@
                         </aside>
 
                         <main className="lg:col-span-3">
-                            {activeTab === 'process' ? (
-                                <div className="grid grid-cols-1 xl:grid-cols-5 gap-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                            {role === 'cs' ? (
+                                /* ==================== 顧客服務部視圖 ==================== */
+                                <div className="grid grid-cols-1 xl:grid-cols-5 gap-6 animate-in fade-in duration-300">
                                     <div className="xl:col-span-3 bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-slate-200 space-y-6">
                                         <div className="flex justify-between items-center border-b pb-4">
                                             <h2 className="text-lg font-black text-slate-800 flex items-center tracking-tight">
@@ -387,7 +403,7 @@
                                     <div className="xl:col-span-2">
                                         <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl sticky top-6">
                                             <h3 className="text-xs font-black text-slate-400 uppercase mb-6 flex items-center border-b border-slate-700 pb-3 tracking-widest">
-                                                <Icon name="activity" className="w-4 h-4 mr-2" /> 即時負荷監視
+                                                <Icon name="activity" className="w-4 h-4 mr-2" /> 即時配額檢測
                                             </h3>
                                             <div className="space-y-8">
                                                 <div>
@@ -398,7 +414,7 @@
                                                         </span>
                                                     </div>
                                                     <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden p-0.5 border border-slate-700">
-                                                        <div className="h-full bg-emerald-500 rounded-full transition-all duration-1000" style={{width: `${Math.min(100, (currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used/currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total)*100)}%`}}></div>
+                                                        <div className={`h-full rounded-full transition-all duration-1000 ${(currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used / currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total) >= 0.8 ? 'bg-red-500' : 'bg-emerald-500'}`} style={{width: `${Math.min(100, (currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used/currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total)*100)}%`}}></div>
                                                     </div>
                                                 </div>
                                                 <div>
@@ -409,28 +425,38 @@
                                                         </span>
                                                     </div>
                                                     <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden p-0.5 border border-slate-700">
-                                                        <div className="h-full bg-orange-500 rounded-full transition-all duration-1000" style={{width: `${Math.min(100, (currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used/currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total)*100)}%`}}></div>
+                                                        <div className={`h-full rounded-full transition-all duration-1000 ${(currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used / currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total) >= 0.8 ? 'bg-red-500' : 'bg-orange-500'}`} style={{width: `${Math.min(100, (currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used/currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total)*100)}%`}}></div>
                                                     </div>
                                                 </div>
                                             </div>
                                             <div className="mt-8 pt-6 border-t border-slate-800">
                                                 <p className="text-[10px] text-slate-500 leading-relaxed italic">
-                                                    * 配額由資源樞紐即時計算，若區域負荷過高 (超過 80%)，系統進度條將提示警告。
+                                                    * 客服提示：請在提交前確認配額未滿。若顏色變為紅色，代表該區配額即將或已經飽和。
                                                 </p>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
                             ) : (
+                                /* ==================== 車務部視圖 ==================== */
                                 <div className="space-y-6 animate-in fade-in duration-300">
                                     <div className="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-slate-200 overflow-x-auto">
                                         <div className="flex justify-between items-center mb-6">
                                             <h2 className="text-xl font-black flex items-center tracking-tight">
                                                 <Icon name="sliders" className="w-6 h-6 mr-2 text-blue-600" /> 配額資源配置中心
                                             </h2>
-                                            <div className="flex items-center space-x-2">
-                                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">選擇日期：</span>
-                                                <input type="date" value={selectedDate} onChange={(e)=>setSelectedDate(e.target.value)} className="p-2 border rounded-xl text-sm font-bold bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                                            <div className="flex items-center space-x-4">
+                                                <button
+                                                    onClick={() => setIsEditingQuota(!isEditingQuota)}
+                                                    className={`flex items-center px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${isEditingQuota ? 'bg-red-500 text-white shadow-md hover:bg-red-600' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                                                >
+                                                    <Icon name={isEditingQuota ? "lock" : "unlock"} className="w-3.5 h-3.5 mr-1" />
+                                                    {isEditingQuota ? '鎖定並儲存' : '解鎖以更改配額'}
+                                                </button>
+                                                <div className="flex items-center space-x-2">
+                                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">選擇日期：</span>
+                                                    <input type="date" value={selectedDate} onChange={(e)=>setSelectedDate(e.target.value)} className="p-2 border rounded-xl text-sm font-bold bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                                                </div>
                                             </div>
                                         </div>
                                         <table className="w-full border-collapse min-w-[800px]">
@@ -448,12 +474,24 @@
                                                             <td key={slot} className="p-4 border-r">
                                                                 <div className="space-y-2">
                                                                     <div className="flex items-center space-x-2">
-                                                                        <span className="text-[9px] font-bold text-emerald-600 w-8">上車</span>
-                                                                        <input type="number" value={currentQuota[region][slot].pickup.total} onChange={(e)=>handleQuotaChange(region, slot, 'pickup', 'total', e.target.value)} className="w-full p-1.5 border rounded-lg text-xs text-center font-bold focus:border-blue-500 outline-none transition-all hover:bg-white" />
+                                                                        <span className={`text-[9px] font-bold w-8 ${isEditingQuota ? 'text-emerald-600' : 'text-slate-400'}`}>上車</span>
+                                                                        <input 
+                                                                            type="number" 
+                                                                            value={currentQuota[region][slot].pickup.total} 
+                                                                            onChange={(e)=>handleQuotaChange(region, slot, 'pickup', 'total', e.target.value)} 
+                                                                            disabled={!isEditingQuota}
+                                                                            className={`w-full p-1.5 rounded-lg text-xs text-center font-bold outline-none transition-all ${isEditingQuota ? 'border border-emerald-200 focus:border-blue-500 hover:bg-white text-emerald-900' : 'bg-transparent text-slate-500 cursor-not-allowed border border-transparent'}`} 
+                                                                        />
                                                                     </div>
                                                                     <div className="flex items-center space-x-2">
-                                                                        <span className="text-[9px] font-bold text-orange-600 w-8">落車</span>
-                                                                        <input type="number" value={currentQuota[region][slot].dropoff.total} onChange={(e)=>handleQuotaChange(region, slot, 'dropoff', 'total', e.target.value)} className="w-full p-1.5 border rounded-lg text-xs text-center font-bold focus:border-blue-500 outline-none transition-all hover:bg-white" />
+                                                                        <span className={`text-[9px] font-bold w-8 ${isEditingQuota ? 'text-orange-600' : 'text-slate-400'}`}>落車</span>
+                                                                        <input 
+                                                                            type="number" 
+                                                                            value={currentQuota[region][slot].dropoff.total} 
+                                                                            onChange={(e)=>handleQuotaChange(region, slot, 'dropoff', 'total', e.target.value)} 
+                                                                            disabled={!isEditingQuota}
+                                                                            className={`w-full p-1.5 rounded-lg text-xs text-center font-bold outline-none transition-all ${isEditingQuota ? 'border border-orange-200 focus:border-blue-500 hover:bg-white text-orange-900' : 'bg-transparent text-slate-500 cursor-not-allowed border border-transparent'}`} 
+                                                                        />
                                                                     </div>
                                                                 </div>
                                                             </td>
@@ -516,14 +554,12 @@
                                                                     </div>
                                                                     
                                                                     <div className="flex flex-col space-y-1">
-                                                                        {/* 上車進度條 */}
                                                                         <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden border border-slate-800">
                                                                             <div 
                                                                                 className={`h-full transition-all duration-1000 ${pPct >= 80 ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : 'bg-emerald-500'}`} 
                                                                                 style={{width: `${Math.min(100, pPct)}%`}}
                                                                             ></div>
                                                                         </div>
-                                                                        {/* 落車進度條 */}
                                                                         <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden border border-slate-800">
                                                                             <div 
                                                                                 className={`h-full transition-all duration-1000 ${dPct >= 80 ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : 'bg-orange-500'}`} 
@@ -537,17 +573,6 @@
                                                     </div>
                                                 </div>
                                             ))}
-                                        </div>
-                                        
-                                        <div className="mt-8 flex flex-wrap gap-4 justify-center items-center pt-6 border-t border-slate-800">
-                                            <div className="flex items-center px-4 py-2 bg-slate-800 rounded-full border border-slate-700">
-                                                <div className="w-2 h-2 bg-red-500 rounded-full mr-2 shadow-[0_0_5px_rgba(239,68,68,0.8)] animate-pulse"></div>
-                                                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">紅色：負荷超過 80%</span>
-                                            </div>
-                                            <div className="flex items-center px-4 py-2 bg-slate-800 rounded-full border border-slate-700">
-                                                <Icon name="info" className="w-3.5 h-3.5 text-blue-400 mr-2" />
-                                                <span className="text-[10px] text-slate-400 font-medium">數據為所選時段內各區上車與落車之即時雲端統計</span>
-                                            </div>
                                         </div>
                                     </div>
                                 </div>
