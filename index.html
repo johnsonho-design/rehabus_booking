@@ -38,20 +38,34 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+        const { useState, useEffect, useMemo, useRef } = React;
         
-        // 圖標組件包裝 (因 Lucide 在 React CDN 模式下需特別處理)
-        const Icon = ({ name, className }) => {
-            const [svg, setSvg] = useState('');
+        // 修正後的圖標組件包裝
+        const Icon = ({ name, className = "w-5 h-5" }) => {
+            const iconRef = useRef(null);
+
             useEffect(() => {
-                if (window.lucide) {
-                    const icon = window.lucide.icons[name];
-                    if (icon) {
-                        setSvg(icon.toSvg({ class: className }));
-                    }
+                if (window.lucide && iconRef.current) {
+                    // 清空之前的內容
+                    iconRef.current.innerHTML = '';
+                    
+                    // 建立一個臨時的 i 標籤供 lucide 渲染
+                    const iconElement = document.createElement('i');
+                    // 確保名稱格式正確 (Lucide 屬性名通常是 kebab-case，但在全域變數下是屬性)
+                    // 這裡我們直接使用 lucide.createIcons 的方式
+                    iconElement.setAttribute('data-lucide', name);
+                    if (className) iconElement.className = className;
+                    
+                    iconRef.current.appendChild(iconElement);
+                    
+                    // 執行渲染
+                    window.lucide.createIcons({
+                        attrs: { class: className }
+                    });
                 }
             }, [name, className]);
-            return <span dangerouslySetInnerHTML={{ __html: svg }} />;
+
+            return <span ref={iconRef} className="inline-flex items-center justify-center"></span>;
         };
 
         const REGIONS = ['香港島', '九龍東', '九龍西', '新界東', '新界西'];
@@ -160,7 +174,7 @@
                 <div className="min-h-screen">
                     <header className="bg-slate-900 text-white p-4 shadow-xl flex justify-between items-center border-b-4 border-blue-600">
                         <div className="flex items-center space-x-3">
-                            <Icon name="Bus" className="w-8 h-8 text-blue-400" />
+                            <Icon name="bus" className="w-8 h-8 text-blue-400" />
                             <h1 className="text-xl font-black uppercase tracking-tight">Rehabus Hub | 車務調配系統</h1>
                         </div>
                     </header>
@@ -169,16 +183,16 @@
                         <aside className="space-y-4">
                             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                                 <button onClick={()=>setActiveTab('process')} className={`w-full flex items-center p-4 transition ${activeTab==='process'?'bg-blue-600 text-white':'text-slate-600 hover:bg-slate-50'}`}>
-                                    <Icon name="UserPlus" className="w-5 h-5 mr-3" /> <span className="font-bold">新增預約申請</span>
+                                    <Icon name="user-plus" className="w-5 h-5 mr-3" /> <span className="font-bold">新增預約申請</span>
                                 </button>
                                 <button onClick={()=>setActiveTab('manage')} className={`w-full flex items-center p-4 transition ${activeTab==='manage'?'bg-blue-600 text-white':'text-slate-600 hover:bg-slate-50'}`}>
-                                    <Icon name="Settings" className="w-5 h-5 mr-3" /> <span className="font-bold">配額樞紐設定</span>
+                                    <Icon name="settings" className="w-5 h-5 mr-3" /> <span className="font-bold">配額樞紐設定</span>
                                 </button>
                             </div>
 
                             <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
                                 <h3 className="text-xs font-black text-slate-400 uppercase mb-3 flex items-center tracking-widest">
-                                    <Icon name="List" className="w-4 h-4 mr-2" /> {selectedDate} 預約名單
+                                    <Icon name="list" className="w-4 h-4 mr-2" /> {selectedDate} 預約名單
                                 </h3>
                                 <div className="space-y-2 max-h-[400px] overflow-y-auto">
                                     {bookings.filter(b => b.bookingDate === selectedDate).length === 0 ? (
@@ -200,7 +214,7 @@
                                 <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
                                     <div className="xl:col-span-3 bg-white p-8 rounded-3xl shadow-sm border border-slate-200 space-y-6">
                                         <h2 className="text-lg font-black text-slate-800 flex items-center uppercase tracking-tight">
-                                            <Icon name="FileText" className="w-5 h-5 mr-2 text-blue-600" /> 預約資料錄入
+                                            <Icon name="file-text" className="w-5 h-5 mr-2 text-blue-600" /> 預約資料錄入
                                         </h2>
                                         <div className="grid grid-cols-2 gap-4">
                                             <div className="col-span-2 md:col-span-1">
@@ -260,7 +274,7 @@
                             ) : (
                                 <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 overflow-x-auto">
                                     <div className="flex justify-between items-center mb-6">
-                                        <h2 className="text-xl font-black flex items-center"><Icon name="Settings" className="w-6 h-6 mr-2 text-blue-600" /> 配額設定 ({selectedDate})</h2>
+                                        <h2 className="text-xl font-black flex items-center"><Icon name="settings" className="w-6 h-6 mr-2 text-blue-600" /> 配額設定 ({selectedDate})</h2>
                                         <input type="date" value={selectedDate} onChange={(e)=>setSelectedDate(e.target.value)} className="text-xs font-bold bg-blue-50 border-none rounded p-2" />
                                     </div>
                                     <table className="w-full border-collapse min-w-[600px]">
