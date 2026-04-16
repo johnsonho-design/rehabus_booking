@@ -46,19 +46,11 @@
 
             useEffect(() => {
                 if (window.lucide && iconRef.current) {
-                    // 清空之前的內容
                     iconRef.current.innerHTML = '';
-                    
-                    // 建立一個臨時的 i 標籤供 lucide 渲染
                     const iconElement = document.createElement('i');
-                    // 確保名稱格式正確 (Lucide 屬性名通常是 kebab-case，但在全域變數下是屬性)
-                    // 這裡我們直接使用 lucide.createIcons 的方式
                     iconElement.setAttribute('data-lucide', name);
                     if (className) iconElement.className = className;
-                    
                     iconRef.current.appendChild(iconElement);
-                    
-                    // 執行渲染
                     window.lucide.createIcons({
                         attrs: { class: className }
                     });
@@ -70,7 +62,7 @@
 
         const REGIONS = ['香港島', '九龍東', '九龍西', '新界東', '新界西'];
         const TIME_SLOTS = ['上午繁忙時間 (06:00-10:59)', '中段 (11:00-14:59)', '下午繁忙時間 (15:00-19:59)', '晚上 (20:00-23:59)'];
-        const PURPOSES = ['治療', '上班/上學', '訓練', '社交/娛樂', '其他'];
+        const PURPOSES = ['就診/治療', '上班/上學', '康復訓練', '社交/娛樂', '其他'];
 
         const generateDefaultQuota = () => {
             const quota = {};
@@ -150,7 +142,7 @@
 
                 setBookings(prev => [{ ...bookingForm, id: Date.now(), bookingDate: selectedDate }, ...prev]);
                 setAlertMsg({ type: 'success', text: '預約成功！' });
-                setBookingForm(prev => ({ ...prev, applicantName: '' }));
+                setBookingForm(prev => ({ ...prev, applicantName: '', purpose: PURPOSES[0] }));
             };
 
             const handleQuotaChange = (region, slot, hub, field, value) => {
@@ -200,7 +192,7 @@
                                     ) : (
                                         bookings.filter(b => b.bookingDate === selectedDate).map(b => (
                                             <div key={b.id} className="text-[11px] p-3 bg-slate-50 rounded-xl border border-slate-100">
-                                                <div className="font-bold text-slate-800">{b.applicantName} ({b.purpose})</div>
+                                                <div className="font-bold text-slate-800">{b.applicantName} <span className="text-blue-600">[{b.purpose}]</span></div>
                                                 <div className="text-slate-500 mt-1">{b.pickupRegion} → {b.dropoffRegion}</div>
                                             </div>
                                         ))
@@ -224,6 +216,18 @@
                                             <div className="col-span-2 md:col-span-1">
                                                 <label className="text-[11px] font-black text-slate-500 uppercase mb-2 block tracking-wider">申請人姓名</label>
                                                 <input type="text" value={bookingForm.applicantName} onChange={(e)=>setBookingForm({...bookingForm, applicantName: e.target.value})} className="w-full p-3 border rounded-xl bg-slate-50" placeholder="姓名" />
+                                            </div>
+                                            <div className="col-span-2 md:col-span-1">
+                                                <label className="text-[11px] font-black text-blue-600 uppercase mb-2 block tracking-wider">用車目的</label>
+                                                <select value={bookingForm.purpose} onChange={(e)=>setBookingForm({...bookingForm, purpose: e.target.value})} className="w-full p-3 border border-blue-200 bg-blue-50 rounded-xl font-bold">
+                                                    {PURPOSES.map(p => <option key={p}>{p}</option>)}
+                                                </select>
+                                            </div>
+                                            <div className="col-span-2 md:col-span-1">
+                                                <label className="text-[11px] font-black text-slate-500 uppercase mb-2 block tracking-wider">時段選擇</label>
+                                                <select value={bookingForm.timeSlot} onChange={(e)=>setBookingForm({...bookingForm, timeSlot: e.target.value})} className="w-full p-3 border rounded-xl bg-slate-50 font-bold">
+                                                    {TIME_SLOTS.map(s => <option key={s}>{s}</option>)}
+                                                </select>
                                             </div>
                                             <div className="col-span-2 md:col-span-1">
                                                 <label className="text-[11px] font-black text-emerald-600 uppercase mb-2 block tracking-wider">上車區</label>
