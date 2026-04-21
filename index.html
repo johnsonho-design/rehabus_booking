@@ -37,7 +37,7 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'rehabus-hub';
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'rehabus-hub-v1';
 
         window.FB_SERVICES = { 
             db, auth, appId, doc, setDoc, getDoc, collection, query, onSnapshot, addDoc, 
@@ -126,28 +126,36 @@
             useEffect(() => {
                 if (!user) return;
                 const fb = window.FB_SERVICES;
+                
+                // 監聽預約
                 const qBookings = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'bookings');
                 const unsubBookings = fb.onSnapshot(qBookings, (snap) => {
                     setBookings(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-                });
+                }, (err) => console.error("Bookings error:", err));
+
+                // 監聽模板
                 const qTemplates = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'quotaTemplates');
                 const unsubTemplates = fb.onSnapshot(qTemplates, (snap) => {
                     const t = {}; snap.docs.forEach(d => t[d.id] = d.data());
                     setTemplates(t);
-                });
+                }, (err) => console.error("Templates error:", err));
+
+                // 監聽每日配額
                 const qQuotas = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'dailyQuotas');
                 const unsubQuotas = fb.onSnapshot(qQuotas, (snap) => {
                     const q = {}; snap.docs.forEach(d => q[d.id] = d.data());
                     setQuotasData(q);
-                });
+                }, (err) => console.error("Quotas error:", err));
+
                 return () => { unsubBookings(); unsubTemplates(); unsubQuotas(); };
             }, [user]);
 
             const currentActiveQuota = useMemo(() => {
-                if (role === 'ops') {
-                    if (editMode === 'date') return quotasData[selectedDate] || templates[getDayType(selectedDate)] || generateDefaultQuota(15);
+                // 如果是 Ops 且處於模板編輯模式
+                if (role === 'ops' && (editMode === 'WEEKDAY' || editMode === 'SATURDAY' || editMode === 'HOLIDAY')) {
                     return templates[editMode] || generateDefaultQuota(15);
                 }
+                // 否則獲取選定日期的配額，若無則回退到模板，再無則產生預設
                 return quotasData[selectedDate] || templates[getDayType(selectedDate)] || generateDefaultQuota(10);
             }, [role, editMode, quotasData, selectedDate, templates]);
 
@@ -159,37 +167,69 @@
             const handleUpdateQuota = async (region, slot, type, field, value) => {
                 if (!user) return;
                 const fb = window.FB_SERVICES;
+                // 深拷貝當前配額
                 const updated = JSON.parse(JSON.stringify(currentActiveQuota));
+                
+                // 確保路徑存在
+                if (!updated[region]) updated[region] = {};
+                if (!updated[region][slot]) updated[region][slot] = { pickup: { total: 0, used: 0 }, dropoff: { total: 0, used: 0 } };
+                
                 updated[region][slot][type][field] = parseInt(value) || 0;
+
                 try {
-                    const targetCollection = editMode === 'date' ? 'dailyQuotas' : 'quotaTemplates';
-                    const targetId = editMode === 'date' ? selectedDate : editMode;
+                    const targetCollection = (role === 'ops' && editMode !== 'date') ? 'quotaTemplates' : 'dailyQuotas';
+                    const targetId = (role === 'ops' && editMode !== 'date') ? editMode : selectedDate;
                     await fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', targetCollection, targetId), updated);
-                    showStatus('配額更新成功');
-                } catch (e) { showStatus('更新失敗', 'error'); }
+                    showStatus('雲端更新成功');
+                } catch (e) { 
+                    console.error(e);
+                    showStatus('更新失敗，請檢查權限', 'error'); 
+                }
             };
 
             const handleBooking = async () => {
                 if (!formData.applicantName.trim()) return showStatus('請輸入乘客姓名', 'error');
-                if (!user) return;
+                if (!user) return showStatus('正在連接伺服器，請稍候', 'error');
+                
                 const fb = window.FB_SERVICES;
-                const trips = parseInt(formData.tripCount);
+                const trips = parseInt(formData.tripCount) || 1;
+                
+                // 確保我們拿到的是一份乾淨的配額物件
                 const updated = JSON.parse(JSON.stringify(currentActiveQuota));
-                const p = updated[formData.pickupRegion][formData.timeSlot].pickup;
-                const d = updated[formData.dropoffRegion][formData.timeSlot].dropoff;
-
-                if (p.used + trips > p.total || d.used + trips > d.total) return showStatus('該時段配額不足', 'error');
-
+                
                 try {
+                    // 安全檢查：確保分區與時段數據存在
+                    if (!updated[formData.pickupRegion] || !updated[formData.pickupRegion][formData.timeSlot] ||
+                        !updated[formData.dropoffRegion] || !updated[formData.dropoffRegion][formData.timeSlot]) {
+                        throw new Error('該日期的配額結構尚未初始化');
+                    }
+
+                    const p = updated[formData.pickupRegion][formData.timeSlot].pickup;
+                    const d = updated[formData.dropoffRegion][formData.timeSlot].dropoff;
+
+                    // 配額檢查
+                    if (p.used + trips > p.total) return showStatus(`${formData.pickupRegion} 上車配額已滿`, 'error');
+                    if (d.used + trips > d.total) return showStatus(`${formData.dropoffRegion} 落車配額已滿`, 'error');
+
+                    // 執行扣減
                     p.used += trips;
                     d.used += trips;
+
+                    // 同步到 Firestore
                     await fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'dailyQuotas', selectedDate), updated);
                     await fb.addDoc(fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'bookings'), {
-                        ...formData, bookingDate: selectedDate, createdAt: Date.now()
+                        ...formData, 
+                        bookingDate: selectedDate, 
+                        createdAt: Date.now(),
+                        uid: user.uid
                     });
+
                     setFormData(prev => ({ ...prev, applicantName: '' }));
-                    showStatus('預約申請已提交');
-                } catch (e) { showStatus('提交失敗', 'error'); }
+                    showStatus('預約成功，已同步至雲端');
+                } catch (e) { 
+                    console.error(e);
+                    showStatus(`提交失敗: ${e.message}`, 'error'); 
+                }
             };
 
             return (
@@ -213,26 +253,26 @@
 
                     <div className="flex flex-1 overflow-hidden">
                         {/* Sidebar */}
-                        <aside className="w-35 md:w-72 bg-white border-r border-slate-200 hidden md:flex flex-col">
+                        <aside className="w-full md:w-72 bg-white border-r border-slate-200 hidden md:flex flex-col">
                             <div className="p-6 border-b border-slate-100">
                                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">營運日期選擇</label>
                                 <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500/20 transition-all" />
                                 <div className={`mt-3 flex items-center p-2 rounded-lg ${DAY_TYPES[getDayType(selectedDate)].color} bg-opacity-10`}>
-                                    <span className={`text-[10px] font-black ${DAY_TYPES[getDayType(selectedDate)].text}`}>今日：{DAY_TYPES[getDayType(selectedDate)].label}</span>
+                                    <span className={`text-[10px] font-black ${DAY_TYPES[getDayType(selectedDate)].text}`}>今日類型：{DAY_TYPES[getDayType(selectedDate)].label}</span>
                                 </div>
                             </div>
                             
-                            {/* Booking List Scroll Area */}
+                            {/* 預約名單 */}
                             <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">當日預約名單</h3>
+                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">當日預約名單 ({selectedDate})</h3>
                                 {bookings.filter(b => b.bookingDate === selectedDate).length === 0 ? (
                                     <div className="text-center py-8">
                                         <Icon name="inbox" className="w-8 h-8 text-slate-200 mx-auto mb-2" />
-                                        <p className="text-xs font-bold text-slate-400 tracking-tight">目前暫無預約</p>
+                                        <p className="text-xs font-bold text-slate-400 tracking-tight">暫無數據</p>
                                     </div>
                                 ) : (
                                     bookings.filter(b => b.bookingDate === selectedDate).map(b => (
-                                        <div key={b.id} className="bg-slate-50 p-3 rounded-xl border border-slate-100 group hover:border-blue-200 transition-all cursor-default">
+                                        <div key={b.id} className="bg-slate-50 p-3 rounded-xl border border-slate-100 group hover:border-blue-200 transition-all cursor-default animate-fadeIn">
                                             <div className="flex justify-between items-start mb-1">
                                                 <span className="font-black text-slate-800 text-xs">{b.applicantName}</span>
                                                 <span className="bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded text-[8px] font-black uppercase">{b.tripCount} 程</span>
@@ -246,20 +286,22 @@
                                 )}
                             </div>
 
-                            {/* Current Quota Stats Box (Moved here from main content) */}
+                            {/* 時段負荷監控 */}
                             {role === 'cs' && (
                                 <div className="p-4 border-t border-slate-100 bg-slate-50/50">
                                     <div className="bg-slate-900 rounded-2xl p-5 text-white shadow-lg relative overflow-hidden">
                                         <div className="absolute top-0 right-0 w-20 h-20 bg-blue-600 rounded-full blur-[50px] opacity-20"></div>
                                         <h3 className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-4 flex items-center border-b border-slate-800 pb-2">
-                                            <Icon name="activity" className="w-2.5 h-2.5 mr-2" /> 當前時段配額
+                                            <Icon name="activity" className="w-2.5 h-2.5 mr-2" /> 當前選擇負荷
                                         </h3>
                                         <div className="space-y-4">
                                             {[
                                                 { reg: formData.pickupRegion, type: 'pickup', label: '出發 (P)', color: 'bg-emerald-500' },
-                                                { reg: formData.dropoffRegion, type: 'dropoff', label: '到達 (D)', color: 'bg-rose-500' }
+                                                { reg: formData.dropoffRegion, type: 'dropoff', label: '到達 (D)', color: 'bg-orange-500' }
                                             ].map(item => {
-                                                const d = currentActiveQuota[item.reg][formData.timeSlot][item.type];
+                                                const d = (currentActiveQuota[item.reg] && currentActiveQuota[item.reg][formData.timeSlot]) 
+                                                    ? currentActiveQuota[item.reg][formData.timeSlot][item.type] 
+                                                    : { used: 0, total: 1 };
                                                 const perc = (d.used / d.total) * 100;
                                                 return (
                                                     <div key={item.type} className="space-y-1.5">
@@ -271,7 +313,7 @@
                                                             <span className="text-xs font-black">{d.used} / {d.total}</span>
                                                         </div>
                                                         <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                                                            <div className={`h-full ${item.color} transition-all duration-700 ease-out`} style={{width: `${Math.min(100, perc)}%`}}></div>
+                                                            <div className={`h-full ${perc >= 100 ? 'bg-rose-500' : item.color} transition-all duration-700 ease-out`} style={{width: `${Math.min(100, perc)}%`}}></div>
                                                         </div>
                                                     </div>
                                                 );
@@ -300,7 +342,7 @@
                                                 <div className="bg-blue-50 p-3 rounded-2xl text-blue-600">
                                                     <Icon name="calendar-plus" className="w-6 h-6" />
                                                 </div>
-                                                <h2 className="text-xl font-black text-slate-800 tracking-tight">建立新預約申請</h2>
+                                                <h2 className="text-xl font-black text-slate-800 tracking-tight">建立預約申請</h2>
                                             </div>
                                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                                                 <div className="space-y-2">
@@ -308,26 +350,26 @@
                                                     <input type="text" placeholder="請輸入姓名" value={formData.applicantName} onChange={e => setFormData({...formData, applicantName: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 font-bold outline-none focus:bg-white focus:border-blue-600 transition-all" />
                                                 </div>
                                                 <div className="space-y-2">
-                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">預約用途</label>
+                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">用車用途</label>
                                                     <select value={formData.purpose} onChange={e => setFormData({...formData, purpose: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 font-bold outline-none cursor-pointer">
                                                         {PURPOSES.map(p => <option key={p}>{p}</option>)}
                                                     </select>
                                                 </div>
                                                 <div className="space-y-2">
-                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">使用時段</label>
+                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">乘車時段</label>
                                                     <select value={formData.timeSlot} onChange={e => setFormData({...formData, timeSlot: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 font-bold outline-none cursor-pointer">
                                                         {TIME_SLOTS.map(s => <option key={s}>{s}</option>)}
                                                     </select>
                                                 </div>
                                                 <div className="space-y-2">
-                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">出發分區</label>
-                                                    <select value={formData.pickupRegion} onChange={e => setFormData({...formData, pickupRegion: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 font-bold outline-none cursor-pointer">
+                                                    <label className="text-[11px] font-black text-emerald-600 uppercase tracking-widest ml-1">上車區域</label>
+                                                    <select value={formData.pickupRegion} onChange={e => setFormData({...formData, pickupRegion: e.target.value})} className="w-full bg-emerald-50/30 border border-emerald-100 rounded-xl p-4 font-bold outline-none cursor-pointer text-emerald-800">
                                                         {REGIONS.map(r => <option key={r}>{r}</option>)}
                                                     </select>
                                                 </div>
                                                 <div className="space-y-2">
-                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">目的地分區</label>
-                                                    <select value={formData.dropoffRegion} onChange={e => setFormData({...formData, dropoffRegion: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 font-bold outline-none cursor-pointer">
+                                                    <label className="text-[11px] font-black text-orange-600 uppercase tracking-widest ml-1">落車區域</label>
+                                                    <select value={formData.dropoffRegion} onChange={e => setFormData({...formData, dropoffRegion: e.target.value})} className="w-full bg-orange-50/30 border border-orange-100 rounded-xl p-4 font-bold outline-none cursor-pointer text-orange-800">
                                                         {REGIONS.map(r => <option key={r}>{r}</option>)}
                                                     </select>
                                                 </div>
@@ -337,8 +379,8 @@
                                             </div>
                                         </div>
 
-                                        {/* 配額概覽表格 */}
-                                        <div className="bg-white p-6 md:p-8 rounded-[2rem] shadow-sm border border-slate-200">
+                                        {/* 全日配額概覽 */}
+                                        <div className="bg-white p-6 md:p-8 rounded-[2rem] shadow-sm border border-slate-200 overflow-hidden">
                                             <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-100 pb-4 mb-6">
                                                 <h3 className="text-lg font-black text-slate-800 flex items-center tracking-tight">
                                                     <Icon name="layout-grid" className="w-5 h-5 mr-2 text-blue-600" /> 全日分區配額一覽 ({selectedDate})
@@ -348,7 +390,7 @@
                                                         <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full mr-1.5"></span> 上車 (P)
                                                     </div>
                                                     <div className="flex items-center text-[10px] font-bold text-slate-400">
-                                                        <span className="w-2.5 h-2.5 bg-rose-500 rounded-full mr-1.5"></span> 落車 (D)
+                                                        <span className="w-2.5 h-2.5 bg-orange-500 rounded-full mr-1.5"></span> 落車 (D)
                                                     </div>
                                                 </div>
                                             </div>
@@ -365,7 +407,9 @@
                                                             <tr key={region} className="border-b border-slate-50 group hover:bg-slate-50/50 transition-all">
                                                                 <td className="p-4 font-black text-slate-700 bg-white sticky left-0 z-10 border-r border-slate-50">{region}</td>
                                                                 {TIME_SLOTS.map(slot => {
-                                                                    const d = currentActiveQuota[region][slot];
+                                                                    const d = (currentActiveQuota[region] && currentActiveQuota[region][slot]) 
+                                                                        ? currentActiveQuota[region][slot] 
+                                                                        : { pickup: { used: 0, total: 0 }, dropoff: { used: 0, total: 0 } };
                                                                     return (
                                                                         <td key={slot} className="p-4 text-center">
                                                                             <div className="inline-flex space-x-3 bg-white p-1.5 rounded-lg border border-slate-100 shadow-sm group-hover:border-blue-100 transition-all">
@@ -397,7 +441,7 @@
                                                 </h2>
                                                 <p className="text-xs font-bold text-slate-400 mt-1">管理各營運時段之基礎及特定日配額</p>
                                             </div>
-                                            <div className="flex bg-slate-100 p-1.5 rounded-2xl shadow-inner">
+                                            <div className="flex bg-slate-100 p-1.5 rounded-2xl shadow-inner flex-wrap gap-1">
                                                 {Object.keys(DAY_TYPES).map(key => (
                                                     <button key={key} onClick={() => setEditMode(key)} className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all ${editMode === key ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500 hover:text-slate-700'}`}>
                                                         {DAY_TYPES[key].label}
@@ -420,7 +464,9 @@
                                                         <tr key={region} className="border-b border-slate-50 hover:bg-slate-50/30">
                                                             <td className="p-6 font-black text-slate-700 bg-white sticky left-0 z-10 border-r border-slate-50">{region}</td>
                                                             {TIME_SLOTS.map(slot => {
-                                                                const d = currentActiveQuota[region][slot];
+                                                                const d = (currentActiveQuota[region] && currentActiveQuota[region][slot]) 
+                                                                    ? currentActiveQuota[region][slot] 
+                                                                    : { pickup: { total: 0, used: 0 }, dropoff: { total: 0, used: 0 } };
                                                                 return (
                                                                     <td key={slot} className="p-6">
                                                                         <div className="space-y-3">
