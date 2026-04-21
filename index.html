@@ -19,482 +19,658 @@
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: #f1f5f9; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-        .quota-input::-webkit-inner-spin-button, .quota-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .animate-fadeIn { animation: fadeIn 0.3s ease-out forwards; }
     </style>
 </head>
-<body class="bg-slate-50 text-slate-900">
+<body class="bg-slate-50">
     <div id="root"></div>
 
+    <!-- Firebase SDK Setup -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, addDoc, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, addDoc, updateDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'rehabus-hub-v1';
-
-        window.FB_SERVICES = { 
-            db, auth, appId, doc, setDoc, getDoc, collection, query, onSnapshot, addDoc, 
-            signInAnonymously, onAuthStateChanged, signInWithCustomToken 
+        // === FIREBASE 配置區塊 ===
+        const manualConfig = {
+            apiKey: "AIzaSyDyq0hFze7k8lGOM74DrEUHd2lMuiRLfKE",
+            authDomain: "rehabus-hub.firebaseapp.com",
+            projectId: "rehabus-hub",
+            storageBucket: "rehabus-hub.firebasestorage.app",
+            messagingSenderId: "177803133313",
+            appId: "1:177803133313:web:f7f660932ebfc070142880"
         };
+
+        let firebaseConfig = null;
+        try {
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                firebaseConfig = JSON.parse(__firebase_config);
+            } else if (manualConfig.apiKey && manualConfig.apiKey !== "YOUR_API_KEY") {
+                firebaseConfig = manualConfig;
+            }
+        } catch (e) {
+            console.error("Config parsing error", e);
+        }
+
+        if (firebaseConfig) {
+            const app = initializeApp(firebaseConfig);
+            const auth = getAuth(app);
+            const db = getFirestore(app);
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'rehabus-hub-global';
+
+            window.FB_SERVICES = { 
+                db, auth, appId, collection, doc, setDoc, onSnapshot, addDoc, updateDoc, 
+                signInAnonymously, onAuthStateChanged, signInWithCustomToken,
+                isDemo: false
+            };
+        } else {
+            window.FB_SERVICES = { 
+                isDemo: true,
+                onAuthStateChanged: (auth, callback) => {
+                    const fakeUser = { uid: 'OFFLINE-USER-' + Math.random().toString(36).substr(2, 9) };
+                    setTimeout(() => callback(fakeUser), 100);
+                    return () => {};
+                }
+            };
+        }
     </script>
 
+    <!-- React Application Logic -->
     <script type="text/babel">
-        const { useState, useEffect, useMemo, useRef } = React;
-
-        const REGIONS = ['香港島', '九龍東', '九龍西', '新界東', '新界西'];
-        const TIME_SLOTS = ['上午繁忙時間 (06:00-10:59)', '中段 (11:00-14:59)', '下午繁忙時間 (15:00-19:59)', '晚上 (20:00-23:59)'];
-        const PURPOSES = ['就診/治療', '上班/上學', '訓練', '社交/娛樂', '其他'];
+        const { useState, useEffect, useRef, useMemo } = React;
         
-        const DAY_TYPES = {
-            WEEKDAY: { label: '平日 (一至五)', color: 'bg-blue-500', text: 'text-blue-600' },
-            SATURDAY: { label: '星期六', color: 'bg-orange-500', text: 'text-orange-600' },
-            HOLIDAY: { label: '星期日及公眾假期', color: 'bg-rose-500', text: 'text-rose-600' }
-        };
-
-        const Icon = ({ name, className = "w-4 h-4" }) => {
+        // Lucide 圖標封裝組件
+        const Icon = ({ name, className = "w-5 h-5" }) => {
             const iconRef = useRef(null);
             useEffect(() => {
                 if (window.lucide && iconRef.current) {
                     iconRef.current.innerHTML = '';
                     const iconElement = document.createElement('i');
                     iconElement.setAttribute('data-lucide', name);
+                    if (className) iconElement.className = className;
                     iconRef.current.appendChild(iconElement);
-                    window.lucide.createIcons();
+                    window.lucide.createIcons({ attrs: { class: className } });
                 }
-            }, [name]);
-            return <span ref={iconRef} className={className} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}></span>;
+            }, [name, className]);
+            return <span ref={iconRef} className="inline-flex items-center justify-center"></span>;
         };
 
-        const generateDefaultQuota = (val = 10) => {
-            const q = {};
-            REGIONS.forEach(r => {
-                q[r] = {};
-                TIME_SLOTS.forEach(s => {
-                    q[r][s] = { pickup: { total: val, used: 0 }, dropoff: { total: val, used: 0 } };
+        const REGIONS = ['香港島', '九龍東', '九龍西', '新界東', '新界西'];
+        const TIME_SLOTS = ['上午繁忙時間 (06:00-10:59)', '中段 (11:00-14:59)', '下午繁忙時間 (15:00-19:59)', '晚上 (20:00-23:59)'];
+        const PURPOSES = ['就診/治療', '上班/上學', '訓練', '社交/娛樂', '其他'];
+
+        const generateDefaultQuota = () => {
+            const quota = {};
+            REGIONS.forEach(region => {
+                quota[region] = {};
+                TIME_SLOTS.forEach(slot => {
+                    quota[region][slot] = {
+                        pickup: { total: 12, used: 0 },
+                        dropoff: { total: 12, used: 0 }
+                    };
                 });
             });
-            return q;
+            return quota;
         };
 
-        const App = () => {
+        function App() {
             const [user, setUser] = useState(null);
-            const [role, setRole] = useState('cs');
+            const [role, setRole] = useState('cs'); // 'cs' (顧客服務部) 或 'ops' (車務部)
             const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
-            const [editMode, setEditMode] = useState('WEEKDAY');
             const [quotasData, setQuotasData] = useState({});
-            const [templates, setTemplates] = useState({});
             const [bookings, setBookings] = useState([]);
-            const [status, setStatus] = useState({ msg: '', type: '' });
+            const [alertMsg, setAlertMsg] = useState({ type: '', text: '' });
+            const [loading, setLoading] = useState(true);
+            const [isEditingQuota, setIsEditingQuota] = useState(false); // 新增：控制配額是否允許編輯的狀態
 
-            const [formData, setFormData] = useState({
-                applicantName: '', purpose: PURPOSES[0], pickupRegion: REGIONS[0],
-                dropoffRegion: REGIONS[1], timeSlot: TIME_SLOTS[0], tripCount: 1
+            const [bookingForm, setBookingForm] = useState({
+                applicantName: '',
+                purpose: PURPOSES[0],
+                pickupRegion: REGIONS[0],
+                dropoffRegion: REGIONS[1],
+                timeSlot: TIME_SLOTS[0],
+                tripCount: 1, // 新增：申請行程數目
             });
 
-            const getDayType = (dateStr) => {
-                const day = new Date(dateStr).getDay();
-                if (day === 0) return 'HOLIDAY';
-                if (day === 6) return 'SATURDAY';
-                return 'WEEKDAY';
-            };
-
+            // 處理 Firebase 認證
             useEffect(() => {
-                const checkFB = setInterval(() => {
+                const checkServices = setInterval(() => {
                     if (window.FB_SERVICES) {
-                        clearInterval(checkFB);
-                        const fb = window.FB_SERVICES;
+                        clearInterval(checkServices);
+                        const services = window.FB_SERVICES;
+
+                        if (services.isDemo) {
+                            setUser({ uid: 'DEMO-MODE' });
+                            setQuotasData({ [selectedDate]: generateDefaultQuota() });
+                            setLoading(false);
+                            return;
+                        }
+
+                        const { auth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } = services;
+                        
                         const initAuth = async () => {
-                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                                await fb.signInWithCustomToken(fb.auth, __initial_auth_token);
-                            } else {
-                                await fb.signInAnonymously(fb.auth);
-                            }
+                            try {
+                                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                                    await signInWithCustomToken(auth, __initial_auth_token);
+                                } else {
+                                    await signInAnonymously(auth);
+                                }
+                            } catch (err) { console.error("Auth error:", err); }
                         };
+
                         initAuth();
-                        fb.onAuthStateChanged(fb.auth, setUser);
+                        const unsubscribe = onAuthStateChanged(auth, (u) => setUser(u));
+                        return () => unsubscribe();
                     }
                 }, 100);
+                return () => clearInterval(checkServices);
             }, []);
 
+            // 數據實時同步
             useEffect(() => {
-                if (!user) return;
-                const fb = window.FB_SERVICES;
-                
-                // 監聽預約
-                const qBookings = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'bookings');
-                const unsubBookings = fb.onSnapshot(qBookings, (snap) => {
-                    setBookings(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-                }, (err) => console.error("Bookings error:", err));
+                if (!user || window.FB_SERVICES?.isDemo) return;
+                const { db, appId, collection, doc, onSnapshot, setDoc } = window.FB_SERVICES;
 
-                // 監聽模板
-                const qTemplates = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'quotaTemplates');
-                const unsubTemplates = fb.onSnapshot(qTemplates, (snap) => {
-                    const t = {}; snap.docs.forEach(d => t[d.id] = d.data());
-                    setTemplates(t);
-                }, (err) => console.error("Templates error:", err));
+                const bookingsCol = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
+                const unsubBookings = onSnapshot(bookingsCol, (snapshot) => {
+                    const list = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
+                    setBookings(list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+                }, (err) => console.error("Bookings load error:", err));
 
-                // 監聽每日配額
-                const qQuotas = fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'dailyQuotas');
-                const unsubQuotas = fb.onSnapshot(qQuotas, (snap) => {
-                    const q = {}; snap.docs.forEach(d => q[d.id] = d.data());
-                    setQuotasData(q);
-                }, (err) => console.error("Quotas error:", err));
-
-                return () => { unsubBookings(); unsubTemplates(); unsubQuotas(); };
-            }, [user]);
-
-            const currentActiveQuota = useMemo(() => {
-                // 如果是 Ops 且處於模板編輯模式
-                if (role === 'ops' && (editMode === 'WEEKDAY' || editMode === 'SATURDAY' || editMode === 'HOLIDAY')) {
-                    return templates[editMode] || generateDefaultQuota(15);
-                }
-                // 否則獲取選定日期的配額，若無則回退到模板，再無則產生預設
-                return quotasData[selectedDate] || templates[getDayType(selectedDate)] || generateDefaultQuota(10);
-            }, [role, editMode, quotasData, selectedDate, templates]);
-
-            const showStatus = (msg, type = 'success') => {
-                setStatus({ msg, type });
-                setTimeout(() => setStatus({ msg: '', type: '' }), 3000);
-            };
-
-            const handleUpdateQuota = async (region, slot, type, field, value) => {
-                if (!user) return;
-                const fb = window.FB_SERVICES;
-                // 深拷貝當前配額
-                const updated = JSON.parse(JSON.stringify(currentActiveQuota));
-                
-                // 確保路徑存在
-                if (!updated[region]) updated[region] = {};
-                if (!updated[region][slot]) updated[region][slot] = { pickup: { total: 0, used: 0 }, dropoff: { total: 0, used: 0 } };
-                
-                updated[region][slot][type][field] = parseInt(value) || 0;
-
-                try {
-                    const targetCollection = (role === 'ops' && editMode !== 'date') ? 'quotaTemplates' : 'dailyQuotas';
-                    const targetId = (role === 'ops' && editMode !== 'date') ? editMode : selectedDate;
-                    await fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', targetCollection, targetId), updated);
-                    showStatus('雲端更新成功');
-                } catch (e) { 
-                    console.error(e);
-                    showStatus('更新失敗，請檢查權限', 'error'); 
-                }
-            };
-
-            const handleBooking = async () => {
-                if (!formData.applicantName.trim()) return showStatus('請輸入乘客姓名', 'error');
-                if (!user) return showStatus('正在連接伺服器，請稍候', 'error');
-                
-                const fb = window.FB_SERVICES;
-                const trips = parseInt(formData.tripCount) || 1;
-                
-                // 確保我們拿到的是一份乾淨的配額物件
-                const updated = JSON.parse(JSON.stringify(currentActiveQuota));
-                
-                try {
-                    // 安全檢查：確保分區與時段數據存在
-                    if (!updated[formData.pickupRegion] || !updated[formData.pickupRegion][formData.timeSlot] ||
-                        !updated[formData.dropoffRegion] || !updated[formData.dropoffRegion][formData.timeSlot]) {
-                        throw new Error('該日期的配額結構尚未初始化');
+                const quotaDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'quotas', selectedDate);
+                const unsubQuotas = onSnapshot(quotaDocRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        setQuotasData(prev => ({ ...prev, [selectedDate]: docSnap.data() }));
+                    } else {
+                        const defaultData = generateDefaultQuota();
+                        setDoc(quotaDocRef, defaultData);
+                        setQuotasData(prev => ({ ...prev, [selectedDate]: defaultData }));
                     }
+                    setLoading(false);
+                }, (err) => {
+                    console.error("Quota load error:", err);
+                    setLoading(false);
+                });
 
-                    const p = updated[formData.pickupRegion][formData.timeSlot].pickup;
-                    const d = updated[formData.dropoffRegion][formData.timeSlot].dropoff;
+                return () => { unsubBookings(); unsubQuotas(); };
+            }, [user, selectedDate]);
 
-                    // 配額檢查
-                    if (p.used + trips > p.total) return showStatus(`${formData.pickupRegion} 上車配額已滿`, 'error');
-                    if (d.used + trips > d.total) return showStatus(`${formData.dropoffRegion} 落車配額已滿`, 'error');
+            const currentQuota = useMemo(() => {
+                return quotasData[selectedDate] || generateDefaultQuota();
+            }, [quotasData, selectedDate]);
 
-                    // 執行扣減
-                    p.used += trips;
-                    d.used += trips;
+            // 顧客服務部：提交預約
+            const processBooking = async () => {
+                if (!user) return;
+                if (!bookingForm.applicantName.trim()) {
+                    setAlertMsg({ type: 'error', text: '請輸入申請者姓名' });
+                    return;
+                }
+                
+                const trips = parseInt(bookingForm.tripCount) || 1;
 
-                    // 同步到 Firestore
-                    await fb.setDoc(fb.doc(fb.db, 'artifacts', fb.appId, 'public', 'data', 'dailyQuotas', selectedDate), updated);
-                    await fb.addDoc(fb.collection(fb.db, 'artifacts', fb.appId, 'public', 'data', 'bookings'), {
-                        ...formData, 
-                        bookingDate: selectedDate, 
+                if (window.FB_SERVICES.isDemo) {
+                    setAlertMsg({ type: 'success', text: '演示模式：預約已模擬提交（不會永久儲存）' });
+                    return;
+                }
+
+                const { db, appId, doc, setDoc, collection, addDoc } = window.FB_SERVICES;
+                const pickupQuota = currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup;
+                const dropoffQuota = currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff;
+
+                if (pickupQuota.used + trips > pickupQuota.total || dropoffQuota.used + trips > dropoffQuota.total) {
+                    setAlertMsg({ type: 'error', text: `預約失敗：該時段區域配額不足（需要 ${trips} 個配額）` });
+                    return;
+                }
+
+                try {
+                    const quotaDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'quotas', selectedDate);
+                    const updatedQuota = JSON.parse(JSON.stringify(currentQuota));
+                    updatedQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used += trips;
+                    updatedQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used += trips;
+                    await setDoc(quotaDocRef, updatedQuota);
+
+                    const bookingsCol = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
+                    await addDoc(bookingsCol, {
+                        ...bookingForm,
+                        tripCount: trips,
+                        bookingDate: selectedDate,
                         createdAt: Date.now(),
-                        uid: user.uid
+                        userId: user.uid
                     });
 
-                    setFormData(prev => ({ ...prev, applicantName: '' }));
-                    showStatus('預約成功，已同步至雲端');
-                } catch (e) { 
-                    console.error(e);
-                    showStatus(`提交失敗: ${e.message}`, 'error'); 
+                    setAlertMsg({ type: 'success', text: '預約成功！資料已同步至雲端資料庫' });
+                    setBookingForm(prev => ({ ...prev, applicantName: '', purpose: PURPOSES[0], tripCount: 1 }));
+                    setTimeout(() => setAlertMsg({ type: '', text: '' }), 4000);
+                } catch (err) {
+                    setAlertMsg({ type: 'error', text: '連線錯誤：請檢查資料庫權限設定' });
                 }
             };
 
-            return (
-                <div className="flex flex-col h-screen">
-                    {/* Header */}
-                    <header className="bg-white border-b border-slate-200 px-6 py-4 flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0 sticky top-0 z-50">
-                        <div className="flex items-center space-x-3">
-                            <div className="bg-blue-600 p-2 rounded-lg text-white">
-                                <Icon name="bus" className="w-6 h-6" />
-                            </div>
-                            <div>
-                                <h1 className="text-xl font-black text-slate-800 tracking-tight">Rehabus Hub</h1>
-                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">復康巴士資源樞紐系統</p>
-                            </div>
+            // 車務部：修改配額
+            const handleQuotaChange = async (region, slot, hub, field, value) => {
+                if (!user || window.FB_SERVICES.isDemo) return;
+                const { db, appId, doc, setDoc } = window.FB_SERVICES;
+                const val = parseInt(value) || 0;
+                const updatedQuota = JSON.parse(JSON.stringify(currentQuota));
+                updatedQuota[region][slot][hub][field] = val;
+                
+                const quotaDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'quotas', selectedDate);
+                await setDoc(quotaDocRef, updatedQuota);
+            };
+
+            if (loading) {
+                return (
+                    <div className="flex items-center justify-center h-screen bg-slate-50">
+                        <div className="text-center">
+                            <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                            <p className="font-bold text-slate-500">系統載入中...</p>
                         </div>
-                        <div className="flex bg-slate-100 p-1 rounded-xl shadow-inner">
-                            <button onClick={() => setRole('cs')} className={`px-5 py-2 rounded-lg text-xs font-black transition-all ${role === 'cs' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>顧客服務部 (CS)</button>
-                            <button onClick={() => setRole('ops')} className={`px-5 py-2 rounded-lg text-xs font-black transition-all ${role === 'ops' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>車務管理部 (Ops)</button>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen">
+                    {window.FB_SERVICES?.isDemo && (
+                        <div className="bg-red-600 text-white text-[11px] py-1.5 px-4 font-bold text-center animate-pulse sticky top-0 z-50">
+                            [ 離線演示模式 ] 資料將不會儲存。請於原始碼中填寫 Firebase Config 以啟用雲端同步。
+                        </div>
+                    )}
+                    <header className="bg-slate-900 text-white p-4 shadow-xl flex justify-between items-center border-b-4 border-blue-600">
+                        <div className="flex items-center space-x-3">
+                            <Icon name="bus" className="w-8 h-8 text-blue-400" />
+                            <h1 className="text-xl font-black uppercase tracking-tight">Rehabus Hub</h1>
+                        </div>
+                        
+                        {/* 角色切換開關 */}
+                        <div className="flex items-center space-x-4">
+                            <div className="bg-slate-800 p-1 rounded-xl flex">
+                                <button 
+                                    onClick={() => setRole('cs')}
+                                    className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${role === 'cs' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+                                >
+                                    客戶服務部
+                                </button>
+                                <button 
+                                    onClick={() => setRole('ops')}
+                                    className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${role === 'ops' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+                                >
+                                    車務部
+                                </button>
+                            </div>
+                            <div className="hidden md:block text-[10px] text-slate-400 font-mono bg-slate-800 px-3 py-2 rounded-lg border border-slate-700">
+                                ID: {user?.uid?.slice(0, 8) || 'CONNECTING...'}
+                            </div>
                         </div>
                     </header>
 
-                    <div className="flex flex-1 overflow-hidden">
-                        {/* Sidebar */}
-                        <aside className="w-full md:w-72 bg-white border-r border-slate-200 hidden md:flex flex-col">
-                            <div className="p-6 border-b border-slate-100">
-                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">營運日期選擇</label>
-                                <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500/20 transition-all" />
-                                <div className={`mt-3 flex items-center p-2 rounded-lg ${DAY_TYPES[getDayType(selectedDate)].color} bg-opacity-10`}>
-                                    <span className={`text-[10px] font-black ${DAY_TYPES[getDayType(selectedDate)].text}`}>今日類型：{DAY_TYPES[getDayType(selectedDate)].label}</span>
-                                </div>
-                            </div>
-                            
-                            {/* 預約名單 */}
-                            <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">當日預約名單 ({selectedDate})</h3>
-                                {bookings.filter(b => b.bookingDate === selectedDate).length === 0 ? (
-                                    <div className="text-center py-8">
-                                        <Icon name="inbox" className="w-8 h-8 text-slate-200 mx-auto mb-2" />
-                                        <p className="text-xs font-bold text-slate-400 tracking-tight">暫無數據</p>
+                    <div className="max-w-7xl mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
+                        <aside className="space-y-4">
+                            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                                {/* 根據角色顯示對應的選單 */}
+                                {role === 'cs' ? (
+                                    <div className="w-full flex items-center p-4 bg-blue-50 text-blue-700 border-l-4 border-blue-600 cursor-default">
+                                        <Icon name="user-plus" className="w-5 h-5 mr-3" /> <span className="font-bold">新增預約申請</span>
                                     </div>
                                 ) : (
-                                    bookings.filter(b => b.bookingDate === selectedDate).map(b => (
-                                        <div key={b.id} className="bg-slate-50 p-3 rounded-xl border border-slate-100 group hover:border-blue-200 transition-all cursor-default animate-fadeIn">
-                                            <div className="flex justify-between items-start mb-1">
-                                                <span className="font-black text-slate-800 text-xs">{b.applicantName}</span>
-                                                <span className="bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded text-[8px] font-black uppercase">{b.tripCount} 程</span>
-                                            </div>
-                                            <div className="flex items-center text-[10px] text-slate-500 font-medium">
-                                                <Icon name="map-pin" className="w-2.5 h-2.5 mr-1" />
-                                                <span className="truncate">{b.pickupRegion} → {b.dropoffRegion}</span>
-                                            </div>
-                                        </div>
-                                    ))
+                                    <div className="w-full flex items-center p-4 bg-blue-50 text-blue-700 border-l-4 border-blue-600 cursor-default">
+                                        <Icon name="settings" className="w-5 h-5 mr-3" /> <span className="font-bold">配額資源樞紐</span>
+                                    </div>
                                 )}
                             </div>
 
-                            {/* 時段負荷監控 */}
-                            {role === 'cs' && (
-                                <div className="p-4 border-t border-slate-100 bg-slate-50/50">
-                                    <div className="bg-slate-900 rounded-2xl p-5 text-white shadow-lg relative overflow-hidden">
-                                        <div className="absolute top-0 right-0 w-20 h-20 bg-blue-600 rounded-full blur-[50px] opacity-20"></div>
-                                        <h3 className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-4 flex items-center border-b border-slate-800 pb-2">
-                                            <Icon name="activity" className="w-2.5 h-2.5 mr-2" /> 當前選擇負荷
-                                        </h3>
-                                        <div className="space-y-4">
-                                            {[
-                                                { reg: formData.pickupRegion, type: 'pickup', label: '出發 (P)', color: 'bg-emerald-500' },
-                                                { reg: formData.dropoffRegion, type: 'dropoff', label: '到達 (D)', color: 'bg-orange-500' }
-                                            ].map(item => {
-                                                const d = (currentActiveQuota[item.reg] && currentActiveQuota[item.reg][formData.timeSlot]) 
-                                                    ? currentActiveQuota[item.reg][formData.timeSlot][item.type] 
-                                                    : { used: 0, total: 1 };
-                                                const perc = (d.used / d.total) * 100;
-                                                return (
-                                                    <div key={item.type} className="space-y-1.5">
-                                                        <div className="flex justify-between items-center">
-                                                            <div className="flex flex-col">
-                                                                <span className="text-[8px] font-black text-slate-500 uppercase">{item.label}</span>
-                                                                <span className="text-[10px] font-bold text-white truncate max-w-[80px]">{item.reg}</span>
-                                                            </div>
-                                                            <span className="text-xs font-black">{d.used} / {d.total}</span>
+                            <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+                                <h3 className="text-xs font-black text-slate-400 uppercase mb-3 flex items-center tracking-widest">
+                                    <Icon name="history" className="w-4 h-4 mr-2" /> 最近預約記錄 ({selectedDate})
+                                </h3>
+                                <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
+                                    {bookings.filter(b => b.bookingDate === selectedDate).length === 0 ? (
+                                        <div className="text-center py-10">
+                                            <Icon name="calendar-x" className="w-10 h-10 text-slate-200 mx-auto mb-2" />
+                                            <p className="text-[10px] text-slate-400 italic">尚無當日預約資料</p>
+                                        </div>
+                                    ) : (
+                                        bookings.filter(b => b.bookingDate === selectedDate).map(b => (
+                                            <div key={b.id} className="text-[11px] p-3 bg-slate-50 rounded-xl border border-slate-100 transition-all hover:border-blue-200">
+                                                <div className="text-center py-1">
+                                                <span className="px-2 py-1 bg-blue-700 text-white rounded-full font-bold scale-90">{b.timeSlot}</span>
+                                                </div>
+                                                <div className="flex justify-between items-start py-2">
+                                                    <span className="w-20 font-bold text-slate-800">{b.applicantName}</span>
+                                                    <div>
+                                                        <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-bold scale-90">{b.purpose}</span>
+                                                    </div>
+                                                    <div>
+                                                        <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full font-bold scale-90 ml-1">{b.tripCount || 1} 程</span>
+                                                    </div>
+                                                </div>
+                                                <div className="text-slate-500 mt-2 flex items-center">
+                                                    <Icon name="map-pin" className="w-3 h-3 mr-1 text-slate-400" /> {b.pickupRegion} → {b.dropoffRegion}
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </div>
+                        </aside>
+
+                        <main className="lg:col-span-3">
+                            {role === 'cs' ? (
+                                /* ==================== 顧客服務部視圖 ==================== */
+                                <div className="space-y-6 animate-in fade-in duration-300">
+                                    <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
+                                        <div className="xl:col-span-3 bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-slate-200 space-y-6">
+                                            <div className="flex justify-between items-center border-b pb-4">
+                                                <h2 className="text-lg font-black text-slate-800 flex items-center tracking-tight">
+                                                    <Icon name="clipboard-list" className="w-5 h-5 mr-2 text-blue-600" /> 填寫乘車申請
+                                                </h2>
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <div className="col-span-2 md:col-span-1">
+                                                    <label className="text-[11px] font-black text-slate-500 uppercase mb-2 block tracking-wider">乘車日期</label>
+                                                    <input type="date" value={selectedDate} onChange={(e)=>setSelectedDate(e.target.value)} className="w-full p-3 border rounded-xl bg-slate-50 font-bold focus:ring-2 focus:ring-blue-500 outline-none transition-all" />
+                                                </div>
+                                                <div className="col-span-2 md:col-span-1">
+                                                    <label className="text-[11px] font-black text-slate-500 uppercase mb-2 block tracking-wider">申請人姓名</label>
+                                                    <input type="text" value={bookingForm.applicantName} onChange={(e)=>setBookingForm({...bookingForm, applicantName: e.target.value})} className="w-full p-3 border rounded-xl bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none transition-all" placeholder="輸入全名" />
+                                                </div>
+                                                <div className="col-span-2 md:col-span-1">
+                                                    <label className="text-[11px] font-black text-blue-600 mb-2 block uppercase tracking-wider">用車目的</label>
+                                                    <select value={bookingForm.purpose} onChange={(e)=>setBookingForm({...bookingForm, purpose: e.target.value})} className="w-full p-3 border border-blue-200 bg-blue-50 rounded-xl font-bold cursor-pointer hover:bg-blue-100 transition-all">
+                                                        {PURPOSES.map(p => <option key={p}>{p}</option>)}
+                                                    </select>
+                                                </div>
+                                                <div className="col-span-2 md:col-span-1">
+                                                    <label className="text-[11px] font-black text-blue-600 mb-2 block uppercase tracking-wider">申請行程數目</label>
+                                                    <input type="number" min="1" value={bookingForm.tripCount} onChange={(e)=>setBookingForm({...bookingForm, tripCount: parseInt(e.target.value) || 1})} className="w-full p-3 border border-blue-200 bg-blue-50 rounded-xl font-bold focus:ring-2 focus:ring-blue-500 outline-none transition-all" />
+                                                </div>
+                                                <div className="col-span-2">
+                                                    <label className="text-[11px] font-black text-slate-500 mb-2 block uppercase tracking-wider">預約上車時間</label>
+                                                    <select value={bookingForm.timeSlot} onChange={(e)=>setBookingForm({...bookingForm, timeSlot: e.target.value})} className="w-full p-3 border rounded-xl bg-slate-50 font-bold cursor-pointer hover:bg-slate-100 transition-all">
+                                                        {TIME_SLOTS.map(s => <option key={s}>{s}</option>)}
+                                                    </select>
+                                                </div>
+                                                <div className="col-span-2 md:col-span-1">
+                                                    <label className="text-[11px] font-black text-emerald-600 mb-2 block tracking-wider uppercase">上車區域</label>
+                                                    <select value={bookingForm.pickupRegion} onChange={(e)=>setBookingForm({...bookingForm, pickupRegion: e.target.value})} className="w-full p-3 border border-emerald-200 bg-emerald-50 rounded-xl font-bold cursor-pointer hover:bg-emerald-100 transition-all">
+                                                        {REGIONS.map(r => <option key={r}>{r}</option>)}
+                                                    </select>
+                                                </div>
+                                                <div className="col-span-2 md:col-span-1">
+                                                    <label className="text-[11px] font-black text-orange-600 mb-2 block tracking-wider uppercase">落車區域</label>
+                                                    <select value={bookingForm.dropoffRegion} onChange={(e)=>setBookingForm({...bookingForm, dropoffRegion: e.target.value})} className="w-full p-3 border border-orange-200 bg-orange-50 rounded-xl font-bold cursor-pointer hover:bg-orange-100 transition-all">
+                                                        {REGIONS.map(r => <option key={r}>{r}</option>)}
+                                                    </select>
+                                                </div>
+                                            </div>
+
+                                            <button onClick={processBooking} disabled={!user} className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black text-lg hover:bg-blue-600 active:scale-[0.98] transition-all shadow-lg disabled:opacity-50">
+                                                立即提交預約資料
+                                            </button>
+
+                                            {alertMsg.text && (
+                                                <div className={`p-4 rounded-xl text-sm font-bold border flex items-center animate-bounce ${alertMsg.type==='error'?'bg-red-50 border-red-200 text-red-600':'bg-emerald-50 border-emerald-200 text-emerald-600'}`}>
+                                                    <Icon name={alertMsg.type==='error'?'alert-circle':'check-circle'} className="mr-2" />
+                                                    {alertMsg.text}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div className="xl:col-span-2">
+                                            <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl sticky top-6">
+                                                <h3 className="text-xs font-black text-slate-400 uppercase mb-6 flex items-center border-b border-slate-700 pb-3 tracking-widest">
+                                                    <Icon name="activity" className="w-4 h-4 mr-2" /> 即時配額檢測
+                                                </h3>
+                                                <div className="space-y-8">
+                                                    <div>
+                                                        <div className="flex justify-between mb-2 items-end">
+                                                            <span className="text-xs text-emerald-400 font-bold uppercase tracking-wide">{bookingForm.pickupRegion} (上車)</span>
+                                                            <span className="text-xs font-mono font-bold tracking-widest">
+                                                                {currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used} / {currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total}
+                                                            </span>
                                                         </div>
-                                                        <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                                                            <div className={`h-full ${perc >= 100 ? 'bg-rose-500' : item.color} transition-all duration-700 ease-out`} style={{width: `${Math.min(100, perc)}%`}}></div>
+                                                        <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden p-0.5 border border-slate-700">
+                                                            <div className={`h-full rounded-full transition-all duration-1000 ${(currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used / currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total) >= 0.8 ? 'bg-red-500' : 'bg-emerald-500'}`} style={{width: `${Math.min(100, (currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used/currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total)*100)}%`}}></div>
                                                         </div>
                                                     </div>
-                                                );
-                                            })}
+                                                    <div>
+                                                        <div className="flex justify-between mb-2 items-end">
+                                                            <span className="text-xs text-orange-400 font-bold uppercase tracking-wide">{bookingForm.dropoffRegion} (落車)</span>
+                                                            <span className="text-xs font-mono font-bold tracking-widest">
+                                                                {currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used} / {currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total}
+                                                            </span>
+                                                        </div>
+                                                        <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden p-0.5 border border-slate-700">
+                                                            <div className={`h-full rounded-full transition-all duration-1000 ${(currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used / currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total) >= 0.8 ? 'bg-red-500' : 'bg-orange-500'}`} style={{width: `${Math.min(100, (currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used/currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total)*100)}%`}}></div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className="mt-8 pt-6 border-t border-slate-800">
+                                                    <p className="text-[10px] text-slate-500 leading-relaxed italic">
+                                                        * 客服提示：請在提交前確認配額未滿。若顏色變為紅色，代表該區配額即將或已經飽和。
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* 顧客服務部全日配額概覽 */}
+                                    <div className="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-slate-200">
+                                        <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b pb-4 mb-6 space-y-4 md:space-y-0">
+                                            <h3 className="text-lg font-black text-slate-800 flex items-center tracking-tight">
+                                                <Icon name="layout-grid" className="w-5 h-5 mr-2 text-blue-600" /> 全日各分區時段配額一覽 ({selectedDate})
+                                            </h3>
+                                            <div className="flex space-x-4">
+                                                <div className="flex items-center text-[10px] font-bold text-slate-500">
+                                                    <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full mr-1.5"></span> 上車 (P)
+                                                </div>
+                                                <div className="flex items-center text-[10px] font-bold text-slate-500">
+                                                    <span className="w-2.5 h-2.5 bg-orange-500 rounded-full mr-1.5"></span> 落車 (D)
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                                            {TIME_SLOTS.map(slot => (
+                                                <div key={slot} className="bg-slate-50 p-5 rounded-2xl border border-slate-100 hover:border-blue-200 transition-colors">
+                                                    <h4 className="font-bold text-blue-800 text-sm mb-4 pb-2 border-b border-blue-100 flex justify-between items-center">
+                                                        <span>{slot.split(' ')[0]}</span>
+                                                        <span className="text-[10px] font-mono text-slate-400">{slot.split(' ')[1]}</span>
+                                                    </h4>
+                                                    <div className="space-y-4">
+                                                        {REGIONS.map(region => {
+                                                            const pData = currentQuota[region][slot].pickup;
+                                                            const dData = currentQuota[region][slot].dropoff;
+                                                            const pPct = (pData.used / pData.total) * 100 || 0;
+                                                            const dPct = (dData.used / dData.total) * 100 || 0;
+                                                            return (
+                                                                <div key={region} className="group">
+                                                                    <div className="flex justify-between text-[10px] font-bold text-slate-600 mb-1.5">
+                                                                        <span className="group-hover:text-blue-600 transition-colors">{region}</span>
+                                                                        <div className="space-x-2 font-mono">
+                                                                            <span className={pPct >= 80 ? 'text-red-500' : 'text-emerald-600'}>{pData.used}/{pData.total}</span>
+                                                                            <span className={dPct >= 80 ? 'text-red-500' : 'text-orange-500'}>{dData.used}/{dData.total}</span>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div className="flex space-x-1.5">
+                                                                        <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                                                            <div className={`h-full transition-all duration-500 ${pPct >= 80 ? 'bg-red-500' : 'bg-emerald-500'}`} style={{width: `${Math.min(100, pPct)}%`}}></div>
+                                                                        </div>
+                                                                        <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                                                            <div className={`h-full transition-all duration-500 ${dPct >= 80 ? 'bg-red-500' : 'bg-orange-500'}`} style={{width: `${Math.min(100, dPct)}%`}}></div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-center">
+                                            <Icon name="info" className="w-3.5 h-3.5 text-blue-400 mr-2" />
+                                            <span className="text-[10px] text-slate-400 font-medium">客服提示：建議客戶預約前，參考此表避開紅色滿載之區域與時段。</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                                /* ==================== 車務部視圖 ==================== */
+                                <div className="space-y-6 animate-in fade-in duration-300">
+                                    <div className="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-slate-200 overflow-x-auto">
+                                        <div className="flex justify-between items-center mb-6">
+                                            <h2 className="text-xl font-black flex items-center tracking-tight">
+                                                <Icon name="sliders" className="w-6 h-6 mr-2 text-blue-600" /> 配額資源配置中心
+                                            </h2>
+                                            <div className="flex items-center space-x-4">
+                                                <button
+                                                    onClick={() => setIsEditingQuota(!isEditingQuota)}
+                                                    className={`flex items-center px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${isEditingQuota ? 'bg-red-500 text-white shadow-md hover:bg-red-600' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                                                >
+                                                    <Icon name={isEditingQuota ? "lock" : "unlock"} className="w-3.5 h-3.5 mr-1" />
+                                                    {isEditingQuota ? '鎖定並儲存' : '解鎖以更改配額'}
+                                                </button>
+                                                <div className="flex items-center space-x-2">
+                                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">選擇日期：</span>
+                                                    <input type="date" value={selectedDate} onChange={(e)=>setSelectedDate(e.target.value)} className="p-2 border rounded-xl text-sm font-bold bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <table className="w-full border-collapse min-w-[800px]">
+                                            <thead>
+                                                <tr className="bg-slate-50 border-b text-[10px] text-slate-400 uppercase tracking-widest">
+                                                    <th className="p-4 text-left border-r w-32">服務區域</th>
+                                                    {TIME_SLOTS.map(s => <th key={s} className="p-4 text-center border-r">{s.split(' ')[0]}</th>)}
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {REGIONS.map(region => (
+                                                    <tr key={region} className="border-b hover:bg-slate-50/50 transition-colors">
+                                                        <td className="p-4 border-r font-black text-slate-700 bg-slate-50/30">{region}</td>
+                                                        {TIME_SLOTS.map(slot => (
+                                                            <td key={slot} className="p-4 border-r">
+                                                                <div className="space-y-2">
+                                                                    <div className="flex items-center space-x-2">
+                                                                        <span className={`text-[9px] font-bold w-8 ${isEditingQuota ? 'text-emerald-600' : 'text-slate-400'}`}>上車</span>
+                                                                        <input 
+                                                                            type="number" 
+                                                                            value={currentQuota[region][slot].pickup.total} 
+                                                                            onChange={(e)=>handleQuotaChange(region, slot, 'pickup', 'total', e.target.value)} 
+                                                                            disabled={!isEditingQuota}
+                                                                            className={`w-full p-1.5 rounded-lg text-xs text-center font-bold outline-none transition-all ${isEditingQuota ? 'border border-emerald-200 focus:border-blue-500 hover:bg-white text-emerald-900' : 'bg-transparent text-slate-500 cursor-not-allowed border border-transparent'}`} 
+                                                                        />
+                                                                    </div>
+                                                                    <div className="flex items-center space-x-2">
+                                                                        <span className={`text-[9px] font-bold w-8 ${isEditingQuota ? 'text-orange-600' : 'text-slate-400'}`}>落車</span>
+                                                                        <input 
+                                                                            type="number" 
+                                                                            value={currentQuota[region][slot].dropoff.total} 
+                                                                            onChange={(e)=>handleQuotaChange(region, slot, 'dropoff', 'total', e.target.value)} 
+                                                                            disabled={!isEditingQuota}
+                                                                            className={`w-full p-1.5 rounded-lg text-xs text-center font-bold outline-none transition-all ${isEditingQuota ? 'border border-orange-200 focus:border-blue-500 hover:bg-white text-orange-900' : 'bg-transparent text-slate-500 cursor-not-allowed border border-transparent'}`} 
+                                                                        />
+                                                                    </div>
+                                                                </div>
+                                                            </td>
+                                                        ))}
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+
+                                    {/* 全港配額實時概覽 */}
+                                    <div className="bg-slate-900 p-8 rounded-3xl shadow-xl">
+                                        <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 border-b border-slate-700 pb-6 space-y-4 md:space-y-0">
+                                            <div>
+                                                <h3 className="text-white font-black text-xl flex items-center tracking-tight">
+                                                    <Icon name="layout-grid" className="w-7 h-7 mr-3 text-blue-400" /> 全港配額時段分佈 ({selectedDate})
+                                                </h3>
+                                                <p className="text-slate-500 text-[11px] mt-1 font-bold tracking-wide uppercase">即時監控各時段、各區域之運力負荷百分比</p>
+                                            </div>
+                                            <div className="flex bg-slate-800 p-1 rounded-xl border border-slate-700">
+                                                <div className="flex items-center px-3 py-1 bg-emerald-500/10 rounded-lg mr-2 border border-emerald-500/20">
+                                                    <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full mr-2"></div>
+                                                    <span className="text-[10px] text-emerald-400 font-black">上車負荷</span>
+                                                </div>
+                                                <div className="flex items-center px-3 py-1 bg-orange-500/10 rounded-lg border border-orange-500/20">
+                                                    <div className="w-2.5 h-2.5 bg-orange-500 rounded-full mr-2"></div>
+                                                    <span className="text-[10px] text-orange-400 font-black">落車負荷</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                            {TIME_SLOTS.map(slot => (
+                                                <div key={slot} className="bg-slate-800/40 p-6 rounded-2xl border border-slate-700/50 hover:bg-slate-800 transition-all group">
+                                                    <div className="flex justify-between items-center mb-6 border-b border-slate-700/50 pb-3">
+                                                        <div className="flex items-center">
+                                                            <div className="p-2 bg-blue-500/20 rounded-lg mr-3">
+                                                                <Icon name={slot.includes('繁忙') ? 'zap' : 'clock'} className="w-4 h-4 text-blue-400" />
+                                                            </div>
+                                                            <span className="text-white font-black text-md">{slot.split(' ')[0]}</span>
+                                                        </div>
+                                                        <span className="text-[10px] font-mono text-slate-500 bg-slate-900 px-2 py-1 rounded-md border border-slate-700 tracking-tighter">{slot.split(' ')[1]}</span>
+                                                    </div>
+
+                                                    <div className="space-y-6">
+                                                        {REGIONS.map(region => {
+                                                            const pData = currentQuota[region][slot].pickup;
+                                                            const dData = currentQuota[region][slot].dropoff;
+                                                            const pPct = (pData.used / pData.total) * 100 || 0;
+                                                            const dPct = (dData.used / dData.total) * 100 || 0;
+
+                                                            return (
+                                                                <div key={region} className="group/item">
+                                                                    <div className="flex justify-between items-end mb-2">
+                                                                        <span className="text-slate-400 font-bold text-xs group-hover/item:text-blue-400 transition-colors">{region}</span>
+                                                                        <div className="flex space-x-3 text-[9px] font-mono font-bold tracking-tight">
+                                                                            <span className={pPct >= 80 ? 'text-red-400' : 'text-emerald-500'}>P: {pData.used}/{pData.total}</span>
+                                                                            <span className={dPct >= 80 ? 'text-red-400' : 'text-orange-500'}>D: {dData.used}/{dData.total}</span>
+                                                                        </div>
+                                                                    </div>
+                                                                    
+                                                                    <div className="flex flex-col space-y-1">
+                                                                        {/* 上車進度條 */}
+                                                                        <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden border border-slate-800">
+                                                                            <div 
+                                                                                className={`h-full transition-all duration-1000 ${pPct >= 80 ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : 'bg-emerald-500'}`} 
+                                                                                style={{width: `${Math.min(100, pPct)}%`}}
+                                                                            ></div>
+                                                                        </div>
+                                                                        {/* 落車進度條 */}
+                                                                        <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden border border-slate-800">
+                                                                            <div 
+                                                                                className={`h-full transition-all duration-1000 ${dPct >= 80 ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' : 'bg-orange-500'}`} 
+                                                                                style={{width: `${Math.min(100, dPct)}%`}}
+                                                                            ></div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        
+                                        <div className="mt-8 flex flex-wrap gap-4 justify-center items-center pt-6 border-t border-slate-800">
+                                            <div className="flex items-center px-4 py-2 bg-slate-800 rounded-full border border-slate-700">
+                                                <div className="w-2 h-2 bg-red-500 rounded-full mr-2 shadow-[0_0_5px_rgba(239,68,68,0.8)] animate-pulse"></div>
+                                                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">紅色：負荷超過 80%</span>
+                                            </div>
+                                            <div className="flex items-center px-4 py-2 bg-slate-800 rounded-full border border-slate-700">
+                                                <Icon name="info" className="w-3.5 h-3.5 text-blue-400 mr-2" />
+                                                <span className="text-[10px] text-slate-400 font-medium">數據為所選時段內各區上車與落車之即時雲端統計</span>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
                             )}
-                        </aside>
-
-                        {/* Main Content */}
-                        <main className="flex-1 overflow-y-auto p-4 md:p-8 relative">
-                            <div className="max-w-6xl mx-auto space-y-8 animate-fadeIn">
-                                {status.msg && (
-                                    <div className={`fixed bottom-6 right-6 p-4 rounded-2xl shadow-xl flex items-center space-x-3 z-50 ${status.type === 'error' ? 'bg-rose-600 text-white' : 'bg-slate-900 text-white'}`}>
-                                        <Icon name={status.type === 'error' ? 'alert-circle' : 'check-circle'} className="w-5 h-5" />
-                                        <span className="font-black text-sm tracking-tight">{status.msg}</span>
-                                    </div>
-                                )}
-
-                                {role === 'cs' ? (
-                                    <>
-                                        {/* 預約表單 */}
-                                        <div className="bg-white p-6 md:p-10 rounded-[2rem] shadow-sm border border-slate-200">
-                                            <div className="flex items-center space-x-3 mb-8">
-                                                <div className="bg-blue-50 p-3 rounded-2xl text-blue-600">
-                                                    <Icon name="calendar-plus" className="w-6 h-6" />
-                                                </div>
-                                                <h2 className="text-xl font-black text-slate-800 tracking-tight">建立預約申請</h2>
-                                            </div>
-                                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                                <div className="space-y-2">
-                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">乘客姓名</label>
-                                                    <input type="text" placeholder="請輸入姓名" value={formData.applicantName} onChange={e => setFormData({...formData, applicantName: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 font-bold outline-none focus:bg-white focus:border-blue-600 transition-all" />
-                                                </div>
-                                                <div className="space-y-2">
-                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">用車用途</label>
-                                                    <select value={formData.purpose} onChange={e => setFormData({...formData, purpose: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 font-bold outline-none cursor-pointer">
-                                                        {PURPOSES.map(p => <option key={p}>{p}</option>)}
-                                                    </select>
-                                                </div>
-                                                <div className="space-y-2">
-                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">乘車時段</label>
-                                                    <select value={formData.timeSlot} onChange={e => setFormData({...formData, timeSlot: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 font-bold outline-none cursor-pointer">
-                                                        {TIME_SLOTS.map(s => <option key={s}>{s}</option>)}
-                                                    </select>
-                                                </div>
-                                                <div className="space-y-2">
-                                                    <label className="text-[11px] font-black text-emerald-600 uppercase tracking-widest ml-1">上車區域</label>
-                                                    <select value={formData.pickupRegion} onChange={e => setFormData({...formData, pickupRegion: e.target.value})} className="w-full bg-emerald-50/30 border border-emerald-100 rounded-xl p-4 font-bold outline-none cursor-pointer text-emerald-800">
-                                                        {REGIONS.map(r => <option key={r}>{r}</option>)}
-                                                    </select>
-                                                </div>
-                                                <div className="space-y-2">
-                                                    <label className="text-[11px] font-black text-orange-600 uppercase tracking-widest ml-1">落車區域</label>
-                                                    <select value={formData.dropoffRegion} onChange={e => setFormData({...formData, dropoffRegion: e.target.value})} className="w-full bg-orange-50/30 border border-orange-100 rounded-xl p-4 font-bold outline-none cursor-pointer text-orange-800">
-                                                        {REGIONS.map(r => <option key={r}>{r}</option>)}
-                                                    </select>
-                                                </div>
-                                                <div className="space-y-2 flex items-end">
-                                                    <button onClick={handleBooking} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black text-base hover:bg-blue-600 transition-all shadow-lg active:scale-[0.98]">確認提交預約</button>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        {/* 全日配額概覽 */}
-                                        <div className="bg-white p-6 md:p-8 rounded-[2rem] shadow-sm border border-slate-200 overflow-hidden">
-                                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-100 pb-4 mb-6">
-                                                <h3 className="text-lg font-black text-slate-800 flex items-center tracking-tight">
-                                                    <Icon name="layout-grid" className="w-5 h-5 mr-2 text-blue-600" /> 全日分區配額一覽 ({selectedDate})
-                                                </h3>
-                                                <div className="flex space-x-4 mt-2 md:mt-0">
-                                                    <div className="flex items-center text-[10px] font-bold text-slate-400">
-                                                        <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full mr-1.5"></span> 上車 (P)
-                                                    </div>
-                                                    <div className="flex items-center text-[10px] font-bold text-slate-400">
-                                                        <span className="w-2.5 h-2.5 bg-orange-500 rounded-full mr-1.5"></span> 落車 (D)
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            <div className="overflow-x-auto rounded-2xl border border-slate-50">
-                                                <table className="w-full text-left">
-                                                    <thead className="bg-slate-50">
-                                                        <tr>
-                                                            <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest sticky left-0 bg-slate-50 z-10">分區</th>
-                                                            {TIME_SLOTS.map(s => <th key={s} className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center min-w-[140px]">{s.split(' ')[0]}</th>)}
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        {REGIONS.map(region => (
-                                                            <tr key={region} className="border-b border-slate-50 group hover:bg-slate-50/50 transition-all">
-                                                                <td className="p-4 font-black text-slate-700 bg-white sticky left-0 z-10 border-r border-slate-50">{region}</td>
-                                                                {TIME_SLOTS.map(slot => {
-                                                                    const d = (currentActiveQuota[region] && currentActiveQuota[region][slot]) 
-                                                                        ? currentActiveQuota[region][slot] 
-                                                                        : { pickup: { used: 0, total: 0 }, dropoff: { used: 0, total: 0 } };
-                                                                    return (
-                                                                        <td key={slot} className="p-4 text-center">
-                                                                            <div className="inline-flex space-x-3 bg-white p-1.5 rounded-lg border border-slate-100 shadow-sm group-hover:border-blue-100 transition-all">
-                                                                                <div className="text-center">
-                                                                                    <p className={`text-xs font-black ${d.pickup.used >= d.pickup.total ? 'text-rose-600' : 'text-emerald-600'}`}>{d.pickup.used}/{d.pickup.total}</p>
-                                                                                </div>
-                                                                                <div className="w-[1px] bg-slate-100"></div>
-                                                                                <div className="text-center">
-                                                                                    <p className={`text-xs font-black ${d.dropoff.used >= d.dropoff.total ? 'text-rose-600' : 'text-slate-700'}`}>{d.dropoff.used}/{d.dropoff.total}</p>
-                                                                                </div>
-                                                                            </div>
-                                                                        </td>
-                                                                    );
-                                                                })}
-                                                            </tr>
-                                                        ))}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        </div>
-                                    </>
-                                ) : (
-                                    /* Ops 管理介面 */
-                                    <div className="bg-white p-6 md:p-10 rounded-[2.5rem] shadow-sm border border-slate-200">
-                                        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10 border-b border-slate-50 pb-8">
-                                            <div>
-                                                <h2 className="text-2xl font-black text-slate-800 flex items-center tracking-tight">
-                                                    <Icon name="sliders" className="w-7 h-7 mr-3 text-blue-600" /> 配額系統配置管理
-                                                </h2>
-                                                <p className="text-xs font-bold text-slate-400 mt-1">管理各營運時段之基礎及特定日配額</p>
-                                            </div>
-                                            <div className="flex bg-slate-100 p-1.5 rounded-2xl shadow-inner flex-wrap gap-1">
-                                                {Object.keys(DAY_TYPES).map(key => (
-                                                    <button key={key} onClick={() => setEditMode(key)} className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all ${editMode === key ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500 hover:text-slate-700'}`}>
-                                                        {DAY_TYPES[key].label}
-                                                    </button>
-                                                ))}
-                                                <button onClick={() => setEditMode('date')} className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all ${editMode === 'date' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500 hover:text-slate-700'}`}>單日微調 ({selectedDate})</button>
-                                            </div>
-                                        </div>
-
-                                        <div className="overflow-x-auto rounded-[1.5rem] border border-slate-100 shadow-sm">
-                                            <table className="w-full text-left">
-                                                <thead className="bg-slate-50/80 backdrop-blur-sm sticky top-0 z-20">
-                                                    <tr>
-                                                        <th className="p-6 text-[10px] font-black text-slate-400 uppercase tracking-widest sticky left-0 bg-slate-50 z-30">分區</th>
-                                                        {TIME_SLOTS.map(s => <th key={s} className="p-6 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center min-w-[200px]">{s}</th>)}
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {REGIONS.map(region => (
-                                                        <tr key={region} className="border-b border-slate-50 hover:bg-slate-50/30">
-                                                            <td className="p-6 font-black text-slate-700 bg-white sticky left-0 z-10 border-r border-slate-50">{region}</td>
-                                                            {TIME_SLOTS.map(slot => {
-                                                                const d = (currentActiveQuota[region] && currentActiveQuota[region][slot]) 
-                                                                    ? currentActiveQuota[region][slot] 
-                                                                    : { pickup: { total: 0, used: 0 }, dropoff: { total: 0, used: 0 } };
-                                                                return (
-                                                                    <td key={slot} className="p-6">
-                                                                        <div className="space-y-3">
-                                                                            <div className="relative">
-                                                                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[9px] font-black text-emerald-600">P</span>
-                                                                                <input type="number" value={d.pickup.total} onChange={e => handleUpdateQuota(region, slot, 'pickup', 'total', e.target.value)} className="quota-input w-full bg-emerald-50/50 border border-emerald-100 pl-7 pr-3 py-2 rounded-xl text-xs font-black text-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/20" />
-                                                                            </div>
-                                                                            <div className="relative">
-                                                                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[9px] font-black text-rose-600">D</span>
-                                                                                <input type="number" value={d.dropoff.total} onChange={e => handleUpdateQuota(region, slot, 'dropoff', 'total', e.target.value)} className="quota-input w-full bg-rose-50/50 border border-rose-100 pl-7 pr-3 py-2 rounded-xl text-xs font-black text-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-500/20" />
-                                                                            </div>
-                                                                        </div>
-                                                                    </td>
-                                                                );
-                                                            })}
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
                         </main>
                     </div>
                 </div>
             );
-        };
+        }
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
