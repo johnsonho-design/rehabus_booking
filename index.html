@@ -352,8 +352,47 @@
                                     )}
                                 </div>
                             </div>
+                            <div className="xl:col-span-2">
+                                            <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl sticky top-6">
+                                                <h3 className="text-xs font-black text-slate-400 uppercase mb-6 flex items-center border-b border-slate-700 pb-3 tracking-widest">
+                                                    <Icon name="activity" className="w-4 h-4 mr-2" /> 即時配額檢測
+                                                </h3>
+                                                <div className="space-y-8">
+                                                    <div>
+                                                        <div className="flex justify-between mb-2 items-end">
+                                                            <span className="text-xs text-emerald-400 font-bold uppercase tracking-wide">{bookingForm.pickupRegion} (上車)</span>
+                                                            <span className="text-xs font-mono font-bold tracking-widest">
+                                                                {currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used} / {currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total}
+                                                            </span>
+                                                        </div>
+                                                        <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden p-0.5 border border-slate-700">
+                                                            <div className={`h-full rounded-full transition-all duration-1000 ${(currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used / currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total) >= 0.8 ? 'bg-red-500' : 'bg-emerald-500'}`} style={{width: `${Math.min(100, (currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used/currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total)*100)}%`}}></div>
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="flex justify-between mb-2 items-end">
+                                                            <span className="text-xs text-orange-400 font-bold uppercase tracking-wide">{bookingForm.dropoffRegion} (落車)</span>
+                                                            <span className="text-xs font-mono font-bold tracking-widest">
+                                                                {currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used} / {currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total}
+                                                            </span>
+                                                        </div>
+                                                        <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden p-0.5 border border-slate-700">
+                                                            <div className={`h-full rounded-full transition-all duration-1000 ${(currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used / currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total) >= 0.8 ? 'bg-red-500' : 'bg-orange-500'}`} style={{width: `${Math.min(100, (currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used/currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total)*100)}%`}}></div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className="mt-8 pt-6 border-t border-slate-800">
+                                                    <p className="text-[10px] text-slate-500 leading-relaxed italic">
+                                                        * 客服提示：請在提交前確認配額未滿。若顏色變為紅色，代表該區配額即將或已經飽和。
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                         </aside>
 
+
+                        
                         <main className="lg:col-span-3">
                             {role === 'cs' ? (
                                 /* ==================== 顧客服務部視圖 ==================== */
@@ -417,43 +456,7 @@
                                             )}
                                         </div>
 
-                                        <div className="xl:col-span-2">
-                                            <div className="bg-slate-900 text-white p-6 rounded-3xl shadow-xl sticky top-6">
-                                                <h3 className="text-xs font-black text-slate-400 uppercase mb-6 flex items-center border-b border-slate-700 pb-3 tracking-widest">
-                                                    <Icon name="activity" className="w-4 h-4 mr-2" /> 即時配額檢測
-                                                </h3>
-                                                <div className="space-y-8">
-                                                    <div>
-                                                        <div className="flex justify-between mb-2 items-end">
-                                                            <span className="text-xs text-emerald-400 font-bold uppercase tracking-wide">{bookingForm.pickupRegion} (上車)</span>
-                                                            <span className="text-xs font-mono font-bold tracking-widest">
-                                                                {currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used} / {currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total}
-                                                            </span>
-                                                        </div>
-                                                        <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden p-0.5 border border-slate-700">
-                                                            <div className={`h-full rounded-full transition-all duration-1000 ${(currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used / currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total) >= 0.8 ? 'bg-red-500' : 'bg-emerald-500'}`} style={{width: `${Math.min(100, (currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.used/currentQuota[bookingForm.pickupRegion][bookingForm.timeSlot].pickup.total)*100)}%`}}></div>
-                                                        </div>
-                                                    </div>
-                                                    <div>
-                                                        <div className="flex justify-between mb-2 items-end">
-                                                            <span className="text-xs text-orange-400 font-bold uppercase tracking-wide">{bookingForm.dropoffRegion} (落車)</span>
-                                                            <span className="text-xs font-mono font-bold tracking-widest">
-                                                                {currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used} / {currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total}
-                                                            </span>
-                                                        </div>
-                                                        <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden p-0.5 border border-slate-700">
-                                                            <div className={`h-full rounded-full transition-all duration-1000 ${(currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used / currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total) >= 0.8 ? 'bg-red-500' : 'bg-orange-500'}`} style={{width: `${Math.min(100, (currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.used/currentQuota[bookingForm.dropoffRegion][bookingForm.timeSlot].dropoff.total)*100)}%`}}></div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                <div className="mt-8 pt-6 border-t border-slate-800">
-                                                    <p className="text-[10px] text-slate-500 leading-relaxed italic">
-                                                        * 客服提示：請在提交前確認配額未滿。若顏色變為紅色，代表該區配額即將或已經飽和。
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
+
 
                                     {/* 顧客服務部全日配額概覽 */}
                                     <div className="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-slate-200">
